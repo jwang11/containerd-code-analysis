@@ -164,7 +164,7 @@ can be used and modified as necessary as a custom configuration.`
 ```
 ## Server的创建及初始化
 看`***server, err := server.New(ctx, config)***`函数是创建并初始化containerd server，
-- 准备GRPC，TTPRC，tcpServer服务接口
+- 准备GRPCServer，TTRPCServer，tcpServer服务接口
 - 加载plugins，逐个p.Init(initContext)
 
 [service/server/server.go](https://github.com/containerd/containerd/blob/7d4c95ff04a4b65ddd12963ef20ff7b5d3d24b96/services/server/server.go#L83)
@@ -319,6 +319,7 @@ func New(ctx context.Context, config *srvconfig.Config) (*Server, error) {
 - 按照Load方式不同，有两类Plugins，一是从指定路径自动加载，二是程序里手动加载，如ContentPlugin, MetadataPlugin
 ```
 func LoadPlugins(ctx context.Context, config *srvconfig.Config) ([]*plugin.Registration, error) {
+//自动加载Plugins，通常被编译成binary，放在指定的目录下
 	// load all plugins into containerd
 	path := config.PluginDir
 	if path == "" {
@@ -327,6 +328,7 @@ func LoadPlugins(ctx context.Context, config *srvconfig.Config) ([]*plugin.Regis
 	if err := plugin.Load(path); err != nil {
 		return nil, err
 	}
+//手动加载Plugin
 	// load additional plugins that don't automatically register themselves
 	plugin.Register(&plugin.Registration{
 		Type: plugin.ContentPlugin,
@@ -409,53 +411,29 @@ func LoadPlugins(ctx context.Context, config *srvconfig.Config) ([]*plugin.Regis
 		},
 	})
 
-	clients := &proxyClients{}
-	for name, pp := range config.ProxyPlugins {
-		var (
-			t plugin.Type
-			f func(*grpc.ClientConn) interface{}
+...省略proxyplugins部分...
 
-			address = pp.Address
-		)
-
-		switch pp.Type {
-		case string(plugin.SnapshotPlugin), "snapshot":
-			t = plugin.SnapshotPlugin
-			ssname := name
-			f = func(conn *grpc.ClientConn) interface{} {
-				return ssproxy.NewSnapshotter(ssapi.NewSnapshotsClient(conn), ssname)
-			}
-
-		case string(plugin.ContentPlugin), "content":
-			t = plugin.ContentPlugin
-			f = func(conn *grpc.ClientConn) interface{} {
-				return csproxy.NewContentStore(csapi.NewContentClient(conn))
-			}
-		default:
-			log.G(ctx).WithField("type", pp.Type).Warn("unknown proxy plugin type")
-		}
-
-		plugin.Register(&plugin.Registration{
-			Type: t,
-			ID:   name,
-			InitFn: func(ic *plugin.InitContext) (interface{}, error) {
-				ic.Meta.Exports["address"] = address
-				conn, err := clients.getClient(address)
-				if err != nil {
-					return nil, err
-				}
-				return f(conn), nil
-			},
-		})
-
-	}
-
-	filter := srvconfig.V2DisabledFilter
-	if config.GetVersion() == 1 {
-		filter = srvconfig.V1DisabledFilter
-	}
 	// return the ordered graph for plugins
 	return plugin.Graph(filter(config.DisabledPlugins)), nil
 }
 
+```
+## 创建grpcServer
+```diff
++	ttrpcServer, err := newTTRPCServer()
++	tcpServerOpts := serverOpts
++	var (
++		grpcServer = grpc.NewServer(serverOpts...)
++		tcpServer  = grpc.NewServer(tcpServerOpts...)
+
++		grpcServices  []plugin.Service
++		tcpServices   []plugin.TCPService
++		ttrpcServices []plugin.TTRPCService
+
++		s = &Server{
++			grpcServer:  grpcServer,
++			tcpServer:   tcpServer,
++			ttrpcServer: ttrpcServer,
++			config:      config,
++		}
 ```
