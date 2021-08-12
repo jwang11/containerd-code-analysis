@@ -14,8 +14,11 @@ func main() {
 	}
 }
 ```
-直接转到```diff
-+ command.App()```，初始化的主要步骤都在这里
+直接转到
+```diff
++ command.App()
+```
+，初始化的主要步骤都在这里
 - 命令行库使用urfave
 - 日志库使用logrus
 
