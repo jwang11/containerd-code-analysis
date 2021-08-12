@@ -16,7 +16,7 @@ func main() {
 - 命令行库使用urfave
 - 日志库使用logrus
 
-https://github.com/containerd/containerd/blob/main/cmd/containerd/command/main.go#L66
+[cmd/containerd/command/main.go](https://github.com/containerd/containerd/blob/main/cmd/containerd/command/main.go#L66)
 ```
 // App returns a *cli.App instance.
 func App() *cli.App {
@@ -156,3 +156,5 @@ can be used and modified as necessary as a custom configuration.`
 	return app
 }
 ```
+## server的初始化
+先看`<server, err := server.New(ctx, config)>`函数的实现，
