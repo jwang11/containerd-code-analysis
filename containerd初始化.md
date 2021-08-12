@@ -156,5 +156,202 @@ can be used and modified as necessary as a custom configuration.`
 	return app
 }
 ```
-## server的初始化
-先看`<server, err := server.New(ctx, config)>`函数的实现，
+## Server的创建及初始化
+看`***server, err := server.New(ctx, config)***`函数是创建并初始化containerd server，
+- 准备GRPC，TTPRC服务接口
+- 加载plugins
+[service/server/server.go](https://github.com/containerd/containerd/blob/7d4c95ff04a4b65ddd12963ef20ff7b5d3d24b96/services/server/server.go#L83)
+```
+// New creates and initializes a new containerd server
+func New(ctx context.Context, config *srvconfig.Config) (*Server, error) {
+	if err := apply(ctx, config); err != nil {
+		return nil, err
+	}
+	for key, sec := range config.Timeouts {
+		d, err := time.ParseDuration(sec)
+		if err != nil {
+			return nil, errors.Errorf("unable to parse %s into a time duration", sec)
+		}
+		timeout.Set(key, d)
+	}
+	plugins, err := LoadPlugins(ctx, config)
+	if err != nil {
+		return nil, err
+	}
+	for id, p := range config.StreamProcessors {
+		diff.RegisterProcessor(diff.BinaryHandler(id, p.Returns, p.Accepts, p.Path, p.Args, p.Env))
+	}
+
+	serverOpts := []grpc.ServerOption{
+		grpc.StreamInterceptor(grpc_middleware.ChainStreamServer(
+			otelgrpc.StreamServerInterceptor(),
+			grpc.StreamServerInterceptor(grpc_prometheus.StreamServerInterceptor),
+		)),
+		grpc.UnaryInterceptor(grpc_middleware.ChainUnaryServer(
+			otelgrpc.UnaryServerInterceptor(),
+			grpc.UnaryServerInterceptor(grpc_prometheus.UnaryServerInterceptor),
+		)),
+	}
+	if config.GRPC.MaxRecvMsgSize > 0 {
+		serverOpts = append(serverOpts, grpc.MaxRecvMsgSize(config.GRPC.MaxRecvMsgSize))
+	}
+	if config.GRPC.MaxSendMsgSize > 0 {
+		serverOpts = append(serverOpts, grpc.MaxSendMsgSize(config.GRPC.MaxSendMsgSize))
+	}
+	ttrpcServer, err := newTTRPCServer()
+	if err != nil {
+		return nil, err
+	}
+	tcpServerOpts := serverOpts
+	if config.GRPC.TCPTLSCert != "" {
+		log.G(ctx).Info("setting up tls on tcp GRPC services...")
+
+		tlsCert, err := tls.LoadX509KeyPair(config.GRPC.TCPTLSCert, config.GRPC.TCPTLSKey)
+		if err != nil {
+			return nil, err
+		}
+		tlsConfig := &tls.Config{Certificates: []tls.Certificate{tlsCert}}
+
+		if config.GRPC.TCPTLSCA != "" {
+			caCertPool := x509.NewCertPool()
+			caCert, err := ioutil.ReadFile(config.GRPC.TCPTLSCA)
+			if err != nil {
+				return nil, errors.Wrap(err, "failed to load CA file")
+			}
+			caCertPool.AppendCertsFromPEM(caCert)
+			tlsConfig.ClientCAs = caCertPool
+			tlsConfig.ClientAuth = tls.RequireAndVerifyClientCert
+		}
+
+		tcpServerOpts = append(tcpServerOpts, grpc.Creds(credentials.NewTLS(tlsConfig)))
+	}
+	var (
+		grpcServer = grpc.NewServer(serverOpts...)
+		tcpServer  = grpc.NewServer(tcpServerOpts...)
+
+		grpcServices  []plugin.Service
+		tcpServices   []plugin.TCPService
+		ttrpcServices []plugin.TTRPCService
+
+		s = &Server{
+			grpcServer:  grpcServer,
+			tcpServer:   tcpServer,
+			ttrpcServer: ttrpcServer,
+			config:      config,
+		}
+		// TODO: Remove this in 2.0 and let event plugin crease it
+		events      = exchange.NewExchange()
+		initialized = plugin.NewPluginSet()
+		required    = make(map[string]struct{})
+	)
+	for _, r := range config.RequiredPlugins {
+		required[r] = struct{}{}
+	}
+	for _, p := range plugins {
+		id := p.URI()
+		reqID := id
+		if config.GetVersion() == 1 {
+			reqID = p.ID
+		}
+		log.G(ctx).WithField("type", p.Type).Infof("loading plugin %q...", id)
+
+		initContext := plugin.NewContext(
+			ctx,
+			p,
+			initialized,
+			config.Root,
+			config.State,
+		)
+		initContext.Events = events
+		initContext.Address = config.GRPC.Address
+		initContext.TTRPCAddress = config.TTRPC.Address
+
+		// load the plugin specific configuration if it is provided
+		if p.Config != nil {
+			pc, err := config.Decode(p)
+			if err != nil {
+				return nil, err
+			}
+			initContext.Config = pc
+		}
+		result := p.Init(initContext)
+		if err := initialized.Add(result); err != nil {
+			return nil, errors.Wrapf(err, "could not add plugin result to plugin set")
+		}
+
+		instance, err := result.Instance()
+		if err != nil {
+			if plugin.IsSkipPlugin(err) {
+				log.G(ctx).WithError(err).WithField("type", p.Type).Infof("skip loading plugin %q...", id)
+			} else {
+				log.G(ctx).WithError(err).Warnf("failed to load plugin %s", id)
+			}
+			if _, ok := required[reqID]; ok {
+				return nil, errors.Wrapf(err, "load required plugin %s", id)
+			}
+			continue
+		}
+
+		delete(required, reqID)
+		// check for grpc services that should be registered with the server
+		if src, ok := instance.(plugin.Service); ok {
+			grpcServices = append(grpcServices, src)
+		}
+		if src, ok := instance.(plugin.TTRPCService); ok {
+			ttrpcServices = append(ttrpcServices, src)
+		}
+		if service, ok := instance.(plugin.TCPService); ok {
+			tcpServices = append(tcpServices, service)
+		}
+
+		s.plugins = append(s.plugins, result)
+	}
+	if len(required) != 0 {
+		var missing []string
+		for id := range required {
+			missing = append(missing, id)
+		}
+		return nil, errors.Errorf("required plugin %s not included", missing)
+	}
+
+	// register services after all plugins have been initialized
+	for _, service := range grpcServices {
+		if err := service.Register(grpcServer); err != nil {
+			return nil, err
+		}
+	}
+	for _, service := range ttrpcServices {
+		if err := service.RegisterTTRPC(ttrpcServer); err != nil {
+			return nil, err
+		}
+	}
+	for _, service := range tcpServices {
+		if err := service.RegisterTCP(tcpServer); err != nil {
+			return nil, err
+		}
+	}
+	return s, nil
+}
+
+// Server is the containerd main daemon
+type Server struct {
+	grpcServer  *grpc.Server
+	ttrpcServer *ttrpc.Server
+	tcpServer   *grpc.Server
+	config      *srvconfig.Config
+	plugins     []*plugin.Plugin
+}
+
+// ServeGRPC provides the containerd grpc APIs on the provided listener
+func (s *Server) ServeGRPC(l net.Listener) error {
+	if s.config.Metrics.GRPCHistogram {
+		// enable grpc time histograms to measure rpc latencies
+		grpc_prometheus.EnableHandlingTimeHistogram()
+	}
+	// before we start serving the grpc API register the grpc_prometheus metrics
+	// handler.  This needs to be the last service registered so that it can collect
+	// metrics for every other service
+	grpc_prometheus.Register(s.grpcServer)
+	return trapClosedConnErr(s.grpcServer.Serve(l))
+}
+```
