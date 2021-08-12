@@ -3,10 +3,6 @@
 ---
 >Containerd是一个工业标准的容器运行时，重点是它简洁，健壮，便携，在Linux和window上可以作为一个守护进程运行，它可以管理主机系统上容器的完整的生命周期：镜像传输和存储，容器的执行和监控，低级别的存储和网络。
 
-```diff
-+ this will be highlighted in green
-- this will be highlighted in red
-```
 [cmd/containerd/main.go](https://github.com/containerd/containerd/blob/main/cmd/containerd/main.go)是入口文件，看起来非常简洁
 
 ```
@@ -18,7 +14,8 @@ func main() {
 	}
 }
 ```
-直接转到`command.App()`，初始化的主要步骤都在这里
+直接转到```diff
++ command.App()```，初始化的主要步骤都在这里
 - 命令行库使用urfave
 - 日志库使用logrus
 
