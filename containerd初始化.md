@@ -3,10 +3,10 @@
 ---
 >Containerd是一个工业标准的容器运行时，重点是它简洁，健壮，便携，在Linux和window上可以作为一个守护进程运行，它可以管理主机系统上容器的完整的生命周期：镜像传输和存储，容器的执行和监控，低级别的存储和网络。
 
-作者：Lis_
-链接：https://www.jianshu.com/p/d9bf66841a1e
-来源：简书
-著作权归作者所有。商业转载请联系作者获得授权，非商业转载请注明出处。
+```diff
++ this will be highlighted in green
+- this will be highlighted in red
+```
 [cmd/containerd/main.go](https://github.com/containerd/containerd/blob/main/cmd/containerd/main.go)是入口文件，看起来非常简洁
 
 ```
