@@ -1,6 +1,7 @@
-# containerd初始化
+# Containerd初始化
 
-[cmd/containerd/main.go](https://github.com/containerd/containerd/blob/main/cmd/containerd/main.go)
+---
+[cmd/containerd/main.go](https://github.com/containerd/containerd/blob/main/cmd/containerd/main.go)是入口文件，看起来非常简洁
 
 ```
 func main() {
@@ -11,9 +12,11 @@ func main() {
 	}
 }
 ```
+转到***command.App()***，初始化的主要步骤都在这里
 - 命令行库使用urfave
 - 日志库使用logrus
 
+https://github.com/containerd/containerd/blob/main/cmd/containerd/command/main.go#L66
 ```
 // App returns a *cli.App instance.
 func App() *cli.App {
