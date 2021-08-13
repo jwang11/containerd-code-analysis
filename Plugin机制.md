@@ -294,13 +294,14 @@ func LoadPlugins(ctx context.Context, config *srvconfig.Config) ([]*plugin.Regis
 		ttrpcServices []plugin.TTRPCService
 
 +		s = &Server{
-+			grpcServer:  grpcServer,
-+			tcpServer:   tcpServer,
-+			ttrpcServer: ttrpcServer,
-+			config:      config,
+			grpcServer:  grpcServer,
+			tcpServer:   tcpServer,
+			ttrpcServer: ttrpcServer,
+			config:      config,
 		}
 		// TODO: Remove this in 2.0 and let event plugin crease it
 		events      = exchange.NewExchange()
++		//收集在初始化过程中，已经完成初始化的plugins，最后会放在InitContext里
 +		initialized = plugin.NewPluginSet()
 		required    = make(map[string]struct{})
 	)
@@ -316,7 +317,7 @@ func LoadPlugins(ctx context.Context, config *srvconfig.Config) ([]*plugin.Regis
 +		initContext := plugin.NewContext(
 			ctx,
 			p,
-			initialized,
++			initialized,
 			config.Root,
 			config.State,
 		)
@@ -333,7 +334,8 @@ func LoadPlugins(ctx context.Context, config *srvconfig.Config) ([]*plugin.Regis
 			initContext.Config = pc
 		}
 +		result := p.Init(initContext)
-		if err := initialized.Add(result); err != nil {
++		//按照plugin的类型和ID，加入Set
++		if err := initialized.Add(result); err != nil {
 			return nil, errors.Wrapf(err, "could not add plugin result to plugin set")
 		}
 
@@ -351,7 +353,7 @@ func LoadPlugins(ctx context.Context, config *srvconfig.Config) ([]*plugin.Regis
 		if service, ok := instance.(plugin.TCPService); ok {
 			tcpServices = append(tcpServices, service)
 		}
-
-		s.plugins = append(s.plugins, result)
++		//把完成初始化的plugin加到Server.plugins
++		s.plugins = append(s.plugins, result)
 	}
 ```
