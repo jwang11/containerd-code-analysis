@@ -153,46 +153,22 @@ can be used and modified as necessary as a custom configuration.`
 - 加载plugins，逐个p.Init(initContext)
 
 [service/server/server.go](https://github.com/containerd/containerd/blob/7d4c95ff04a4b65ddd12963ef20ff7b5d3d24b96/services/server/server.go#L83)
-```
+```diff
 // New creates and initializes a new containerd server
 func New(ctx context.Context, config *srvconfig.Config) (*Server, error) {
 	if err := apply(ctx, config); err != nil {
 		return nil, err
 	}
 ...
-	plugins, err := LoadPlugins(ctx, config)
-	if err != nil {
-		return nil, err
-	}
-	for id, p := range config.StreamProcessors {
-		diff.RegisterProcessor(diff.BinaryHandler(id, p.Returns, p.Accepts, p.Path, p.Args, p.Env))
-	}
++	plugins, err := LoadPlugins(ctx, config)
+...
++	ttrpcServer, err := newTTRPCServer()
 
-	serverOpts := []grpc.ServerOption{
-		grpc.StreamInterceptor(grpc_middleware.ChainStreamServer(
-			otelgrpc.StreamServerInterceptor(),
-			grpc.StreamServerInterceptor(grpc_prometheus.StreamServerInterceptor),
-		)),
-		grpc.UnaryInterceptor(grpc_middleware.ChainUnaryServer(
-			otelgrpc.UnaryServerInterceptor(),
-			grpc.UnaryServerInterceptor(grpc_prometheus.UnaryServerInterceptor),
-		)),
-	}
-	if config.GRPC.MaxRecvMsgSize > 0 {
-		serverOpts = append(serverOpts, grpc.MaxRecvMsgSize(config.GRPC.MaxRecvMsgSize))
-	}
-	if config.GRPC.MaxSendMsgSize > 0 {
-		serverOpts = append(serverOpts, grpc.MaxSendMsgSize(config.GRPC.MaxSendMsgSize))
-	}
-	ttrpcServer, err := newTTRPCServer()
-	if err != nil {
-		return nil, err
-	}
 	tcpServerOpts := serverOpts
 ...
 	var (
-		grpcServer = grpc.NewServer(serverOpts...)
-		tcpServer  = grpc.NewServer(tcpServerOpts...)
++		grpcServer = grpc.NewServer(serverOpts...)
++		tcpServer  = grpc.NewServer(tcpServerOpts...)
 
 		grpcServices  []plugin.Service
 		tcpServices   []plugin.TCPService
@@ -239,23 +215,13 @@ func New(ctx context.Context, config *srvconfig.Config) (*Server, error) {
 			}
 			initContext.Config = pc
 		}
-		result := p.Init(initContext)
-		if err := initialized.Add(result); err != nil {
++		result := p.Init(initContext)
++		if err := initialized.Add(result); err != nil {
 			return nil, errors.Wrapf(err, "could not add plugin result to plugin set")
 		}
 
 		instance, err := result.Instance()
-		if err != nil {
-			if plugin.IsSkipPlugin(err) {
-				log.G(ctx).WithError(err).WithField("type", p.Type).Infof("skip loading plugin %q...", id)
-			} else {
-				log.G(ctx).WithError(err).Warnf("failed to load plugin %s", id)
-			}
-			if _, ok := required[reqID]; ok {
-				return nil, errors.Wrapf(err, "load required plugin %s", id)
-			}
-			continue
-		}
+...
 
 		delete(required, reqID)
 		// check for grpc services that should be registered with the server
@@ -310,7 +276,7 @@ func LoadPlugins(ctx context.Context, config *srvconfig.Config) ([]*plugin.Regis
 	if path == "" {
 		path = filepath.Join(config.Root, "plugins")
 	}
-	if err := plugin.Load(path); err != nil {
++	if err := plugin.Load(path); err != nil {
 		return nil, err
 	}
 + //手动加载Plugin
@@ -399,7 +365,7 @@ func LoadPlugins(ctx context.Context, config *srvconfig.Config) ([]*plugin.Regis
 ...省略proxyplugins部分...
 
 	// return the ordered graph for plugins
-	return plugin.Graph(filter(config.DisabledPlugins)), nil
++	return plugin.Graph(filter(config.DisabledPlugins)), nil
 }
 ```
 
