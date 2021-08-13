@@ -1,4 +1,4 @@
-# Containerd里的Plugin
+# Containerd里的Plugin（插件）
 >containerd使用了Plugin注册机制，将task、content、snapshot、namespace、event、containers等服务以插件的方式注册然后提供服务。
 
 ## Plugin的类型，目前有12种
@@ -31,9 +31,9 @@ const (
 )
 ```
 
-## Plugin的注册是通过Registration结构
-- plugin被containerd接受前，必须先定义一个Registeration结构，并填好必要的信息。
-- Registration初始化入口是Init， Init执行完后，构造Plugin结构作为返回结果
+## plugin的注册是通过Registration结构(初始化前）
+- 要注册plugin，必须先定义一个Registeration结构，并填好必要的信息。
+- Registration初始化入口是Init， Init被执行后，表示初始化完成，才生成Plugin结构作为返回结果。
 - InitFn是由plugin提供的初始化函数，它会在Init里被调用，返回结果存入Registration.instance
 
 ```
@@ -74,12 +74,82 @@ func (r *Registration) URI() string {
 }
 ```
 
-- 系统定义了一个全局变量register，所有注册的plugin都放在register.Registration数组里
+- 系统定义了一个全局变量register，所有准备注册的plugin都放在register.Registration数组里
 ```
 var register = struct {
 	sync.RWMutex
 	r []*Registration
 }{}
+```
+
+### Plugin结构和Plugin Set
+- plugin初始化完成后，就会产生一个Plugin结构实例
+```
+// Plugin represents an initialized plugin, used with an init context.
+type Plugin struct {
+	Registration *Registration // registration, as initialized
+	Config       interface{}   // config, as initialized
+	Meta         *Meta
+
+	instance interface{}
+	err      error // will be set if there was an error initializing the plugin
+}
+
+// Err returns the errors during initialization.
+// returns nil if not error was encountered
+func (p *Plugin) Err() error {
+	return p.err
+}
+
+// Instance returns the instance and any initialization error of the plugin
+func (p *Plugin) Instance() (interface{}, error) {
+	return p.instance, p.err
+}
+```
+
+- Plugin Set代表一个Plugin集合，在后面InitContext会使用到
+```
+// Set defines a plugin collection, used with InitContext.
+//
+// This maintains ordering and unique indexing over the set.
+//
+// After iteratively instantiating plugins, this set should represent, the
+// ordered, initialization set of plugins for a containerd instance.
+type Set struct {
+	ordered     []*Plugin // order of initialization
+	byTypeAndID map[Type]map[string]*Plugin
+}
+
+// NewPluginSet returns an initialized plugin set
+func NewPluginSet() *Set {
+	return &Set{
+		byTypeAndID: make(map[Type]map[string]*Plugin),
+	}
+}
+
+// Add a plugin to the set
+func (ps *Set) Add(p *Plugin) error {
+	if byID, typeok := ps.byTypeAndID[p.Registration.Type]; !typeok {
+		ps.byTypeAndID[p.Registration.Type] = map[string]*Plugin{
+			p.Registration.ID: p,
+		}
+	} else if _, idok := byID[p.Registration.ID]; !idok {
+		byID[p.Registration.ID] = p
+	} else {
+		return errors.Wrapf(errdefs.ErrAlreadyExists, "plugin %v already initialized", p.Registration.URI())
+	}
+
+	ps.ordered = append(ps.ordered, p)
+	return nil
+}
+
+// Get returns the first plugin by its type
+func (ps *Set) Get(t Type) (interface{}, error) {
+	for _, v := range ps.byTypeAndID[t] {
+		return v.Instance()
+	}
+	return nil, errors.Wrapf(errdefs.ErrNotFound, "no plugins registered for %s", t)
+}
 ```
 
 ### InitContext是Init的参数，提供plugin初始化需要的上下文信息
