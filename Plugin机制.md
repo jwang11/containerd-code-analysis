@@ -1,7 +1,7 @@
 # Containerd里的Plugin（插件）
 >containerd使用了Plugin注册机制，将task、content、snapshot、namespace、event、containers等服务以插件的方式注册然后提供服务。
 
-## Plugin的类型，目前有12种
+## Plugin的类型，目前共有12种
 ```
 const (
 	// InternalPlugin implements an internal plugin to containerd
@@ -30,12 +30,10 @@ const (
 	EventPlugin Type = "io.containerd.event.v1"
 )
 ```
+- plugin要通过注册和初始化两步，才能被containerd接受。
 
-## plugin的注册是通过Registration结构(初始化前）
-- 要注册plugin，必须先定义一个Registeration结构，并填好必要的信息。
-- Registration初始化入口是Init， Init被执行后，表示初始化完成，才生成Plugin结构作为返回结果。
-- InitFn是由plugin提供的初始化函数，它会在Init里被调用，返回结果存入Registration.instance
-
+### plugin的注册
+- 注册plugin，必须先定义一个Registeration结构，并填好必要的信息。
 ```
 // Registration contains information for registering a plugin
 type Registration struct {
@@ -56,6 +54,49 @@ type Registration struct {
 	Disable bool
 }
 
+// URI returns the full plugin URI
+func (r *Registration) URI() string {
+	return fmt.Sprintf("%s.%s", r.Type, r.ID)
+}
+```
+- 调用plugin.Register函数，把Registration结构作为该函数的参数。
+- 系统定义了一个全局变量register，所有注册的Registration都放在register.Registration数组里
+```diff
+var register = struct {
+	sync.RWMutex
++	r []*Registration
+}{}
+
+// Register allows plugins to register
+func Register(r *Registration) {
+	register.Lock()
+	defer register.Unlock()
+
+	if r.Type == "" {
+		panic(ErrNoType)
+	}
+	if r.ID == "" {
+		panic(ErrNoPluginID)
+	}
+	if err := checkUnique(r); err != nil {
+		panic(err)
+	}
+
+	for _, requires := range r.Requires {
+		if requires == "*" && len(r.Requires) != 1 {
+			panic(ErrInvalidRequires)
+		}
+	}
+
++	register.r = append(register.r, r)
+}
+
+```
+
+### Plugin的初始化
+- Plugin的初始化入口是Registration.Init， 它被执行后，表示初始化完成，才生成Plugin结构作为返回结果。
+- InitFn是由plugin提供的初始化函数，它会在Registration.Init里被调用，返回结果存入Registration.instance
+```
 // Init the registered plugin
 func (r *Registration) Init(ic *InitContext) *Plugin {
 	p, err := r.InitFn(ic)
@@ -67,19 +108,6 @@ func (r *Registration) Init(ic *InitContext) *Plugin {
 		err:          err,
 	}
 }
-
-// URI returns the full plugin URI
-func (r *Registration) URI() string {
-	return fmt.Sprintf("%s.%s", r.Type, r.ID)
-}
-```
-
-- 系统定义了一个全局变量register，所有准备注册的plugin都放在register.Registration数组里
-```
-var register = struct {
-	sync.RWMutex
-	r []*Registration
-}{}
 ```
 
 ### Plugin结构和Plugin Set
@@ -174,9 +202,45 @@ type InitContext struct {
 	plugins *Set
 }
 
+// Meta contains information gathered from the registration and initialization
+// process.
+type Meta struct {
+	Platforms    []ocispec.Platform // platforms supported by plugin
+	Exports      map[string]string  // values exported by plugin
+	Capabilities []string           // feature switches for plugin
+}
+
 // Get returns the first plugin by its type
 func (i *InitContext) Get(t Type) (interface{}, error) {
 	return i.plugins.Get(t)
+}
+
+// GetAll plugins in the set
+func (i *InitContext) GetAll() []*Plugin {
+	return i.plugins.ordered
+}
+
+// GetByID returns the plugin of the given type and ID
+func (i *InitContext) GetByID(t Type, id string) (interface{}, error) {
+	ps, err := i.GetByType(t)
+	if err != nil {
+		return nil, err
+	}
+	p, ok := ps[id]
+	if !ok {
+		return nil, errors.Wrapf(errdefs.ErrNotFound, "no %s plugins with id %s", t, id)
+	}
+	return p.Instance()
+}
+
+// GetByType returns all plugins with the specific type.
+func (i *InitContext) GetByType(t Type) (map[string]*Plugin, error) {
+	p, ok := i.plugins.byTypeAndID[t]
+	if !ok {
+		return nil, errors.Wrapf(errdefs.ErrNotFound, "no plugins registered for %s", t)
+	}
+
+	return p, nil
 }
 ```
 
@@ -194,4 +258,21 @@ func NewContext(ctx context.Context, r *Registration, plugins *Set, root, state 
 		plugins: plugins,
 	}
 }
+```
+
+###Plugin完整的注册过程
+```diff
+// LoadPlugins loads all plugins into containerd and generates an ordered graph
+// of all plugins.
+func LoadPlugins(ctx context.Context, config *srvconfig.Config) ([]*plugin.Registration, error) {
+...
+	// load additional plugins that don't automatically register themselves
+	plugin.Register(&plugin.Registration{
+		Type: plugin.ContentPlugin,
+		ID:   "content",
+		InitFn: func(ic *plugin.InitContext) (interface{}, error) {
+			ic.Meta.Exports["root"] = ic.Root
+			return local.NewStore(ic.Root)
+		},
+	})
 ```
