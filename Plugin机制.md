@@ -35,7 +35,7 @@ const (
 
 ### Plugin的注册
 - 注册plugin，必须先定义一个***Registeration***结构，并填好必要的信息。
-```
+```diff
 // Registration contains information for registering a plugin
 type Registration struct {
 	// Type of the plugin
@@ -97,7 +97,7 @@ func Register(r *Registration) {
 ### Plugin的初始化
 - Plugin的初始化入口是***Registration.Init***。顺利执行如果没有错误，表示初始化完成，生成***Plugin***结构作为返回结果。
 - InitFn是由plugin提供的初始化函数，它会在Registration.Init里被调用，返回结果存入Registration.instance
-```
+```diff
 // Init the registered plugin
 func (r *Registration) Init(ic *InitContext) *Plugin {
 	p, err := r.InitFn(ic)
@@ -113,7 +113,7 @@ func (r *Registration) Init(ic *InitContext) *Plugin {
 
 ### Plugin结构和Plugin Set
 - Plugin初始化完成后，就会产生***Plugin***结构实例
-```
+```diff
 // Plugin represents an initialized plugin, used with an init context.
 type Plugin struct {
 	Registration *Registration // registration, as initialized
@@ -246,7 +246,7 @@ func (i *InitContext) GetByType(t Type) (map[string]*Plugin, error) {
 ```
 
 - 创建InitContext
-```
+```diff
 // NewContext returns a new plugin InitContext
 func NewContext(ctx context.Context, r *Registration, plugins *Set, root, state string) *InitContext {
 	return &InitContext{
