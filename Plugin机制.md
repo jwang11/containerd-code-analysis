@@ -1,7 +1,8 @@
 # Containerd里的Plugin（插件）
 >containerd使用了Plugin注册机制，将task、content、snapshot、namespace、event、containers等服务以插件的方式注册然后提供服务。
 
-## Plugin的类型，目前共有12种
+### Plugin的类型
+- 目前共12种
 ```
 const (
 	// InternalPlugin implements an internal plugin to containerd
@@ -32,8 +33,8 @@ const (
 ```
 - plugin要通过注册和初始化两步，才能被containerd接受。
 
-### plugin的注册
-- 注册plugin，必须先定义一个Registeration结构，并填好必要的信息。
+### Plugin的注册
+- 注册plugin，必须先定义一个***Registeration***结构，并填好必要的信息。
 ```
 // Registration contains information for registering a plugin
 type Registration struct {
@@ -59,7 +60,7 @@ func (r *Registration) URI() string {
 	return fmt.Sprintf("%s.%s", r.Type, r.ID)
 }
 ```
-- 调用plugin.Register函数，把Registration结构作为该函数的参数。
+- 调用***plugin.Register***函数，把***Registration***结构作为该函数的参数。
 - 系统定义了一个全局变量register，所有注册的Registration都放在register.Registration数组里
 ```diff
 var register = struct {
@@ -94,7 +95,7 @@ func Register(r *Registration) {
 ```
 
 ### Plugin的初始化
-- Plugin的初始化入口是Registration.Init， 它被执行后，表示初始化完成，才生成Plugin结构作为返回结果。
+- Plugin的初始化入口是***Registration.Init***。顺利执行如果没有错误，表示初始化完成，生成***Plugin***结构作为返回结果。
 - InitFn是由plugin提供的初始化函数，它会在Registration.Init里被调用，返回结果存入Registration.instance
 ```
 // Init the registered plugin
@@ -111,7 +112,7 @@ func (r *Registration) Init(ic *InitContext) *Plugin {
 ```
 
 ### Plugin结构和Plugin Set
-- plugin初始化完成后，就会产生一个Plugin结构实例
+- Plugin初始化完成后，就会产生***Plugin***结构实例
 ```
 // Plugin represents an initialized plugin, used with an init context.
 type Plugin struct {
@@ -135,7 +136,7 @@ func (p *Plugin) Instance() (interface{}, error) {
 }
 ```
 
-- Plugin Set代表一个Plugin集合，在后面InitContext会使用到
+- Plugin ***Set***代表一个Plugin集合，在后面InitContext会使用到
 ```
 // Set defines a plugin collection, used with InitContext.
 //
@@ -260,7 +261,12 @@ func NewContext(ctx context.Context, r *Registration, plugins *Set, root, state 
 }
 ```
 
-###Plugin完整的注册过程
+### Plugin完整的注册和初始化过程
+- Plugin注册
+```diff
++	plugins, err := LoadPlugins(ctx, config)
+```
+
 ```diff
 // LoadPlugins loads all plugins into containerd and generates an ordered graph
 // of all plugins.
@@ -275,4 +281,77 @@ func LoadPlugins(ctx context.Context, config *srvconfig.Config) ([]*plugin.Regis
 			return local.NewStore(ic.Root)
 		},
 	})
+
+```
+- Plugin初始化
+```diff
+	var (
+		grpcServer = grpc.NewServer(serverOpts...)
+		tcpServer  = grpc.NewServer(tcpServerOpts...)
+
+		grpcServices  []plugin.Service
+		tcpServices   []plugin.TCPService
+		ttrpcServices []plugin.TTRPCService
+
++		s = &Server{
++			grpcServer:  grpcServer,
++			tcpServer:   tcpServer,
++			ttrpcServer: ttrpcServer,
++			config:      config,
+		}
+		// TODO: Remove this in 2.0 and let event plugin crease it
+		events      = exchange.NewExchange()
++		initialized = plugin.NewPluginSet()
+		required    = make(map[string]struct{})
+	)
+	
+	for _, p := range plugins {
+		id := p.URI()
+		reqID := id
+		if config.GetVersion() == 1 {
+			reqID = p.ID
+		}
+		log.G(ctx).WithField("type", p.Type).Infof("loading plugin %q...", id)
+
++		initContext := plugin.NewContext(
+			ctx,
+			p,
+			initialized,
+			config.Root,
+			config.State,
+		)
+		initContext.Events = events
+		initContext.Address = config.GRPC.Address
+		initContext.TTRPCAddress = config.TTRPC.Address
+
+		// load the plugin specific configuration if it is provided
+		if p.Config != nil {
+			pc, err := config.Decode(p)
+			if err != nil {
+				return nil, err
+			}
+			initContext.Config = pc
+		}
++		result := p.Init(initContext)
+		if err := initialized.Add(result); err != nil {
+			return nil, errors.Wrapf(err, "could not add plugin result to plugin set")
+		}
+
+		instance, err := result.Instance()
+...
+
+		delete(required, reqID)
+		// check for grpc services that should be registered with the server
+		if src, ok := instance.(plugin.Service); ok {
+			grpcServices = append(grpcServices, src)
+		}
+		if src, ok := instance.(plugin.TTRPCService); ok {
+			ttrpcServices = append(ttrpcServices, src)
+		}
+		if service, ok := instance.(plugin.TCPService); ok {
+			tcpServices = append(tcpServices, service)
+		}
+
+		s.plugins = append(s.plugins, result)
+	}
 ```
