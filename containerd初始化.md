@@ -23,7 +23,7 @@ func main() {
 - 日志库使用logrus
 
 [cmd/containerd/command/main.go](https://github.com/containerd/containerd/blob/main/cmd/containerd/command/main.go#L66)
-```
+```diff
 // App returns a *cli.App instance.
 func App() *cli.App {
 	app := cli.NewApp()
@@ -98,7 +98,7 @@ can be used and modified as necessary as a custom configuration.`
 			"revision": version.Revision,
 		}).Info("starting containerd")
 
-		server, err := server.New(ctx, config)
++		server, err := server.New(ctx, config)
 		if err != nil {
 			return err
 		}
@@ -110,46 +110,27 @@ can be used and modified as necessary as a custom configuration.`
 
 		serverC <- server
 
-		if config.Debug.Address != "" {
-			var l net.Listener
-			if isLocalAddress(config.Debug.Address) {
-				if l, err = sys.GetLocalListener(config.Debug.Address, config.Debug.UID, config.Debug.GID); err != nil {
-					return errors.Wrapf(err, "failed to get listener for debug endpoint")
-				}
-			} else {
-				if l, err = net.Listen("tcp", config.Debug.Address); err != nil {
-					return errors.Wrapf(err, "failed to get listener for debug endpoint")
-				}
-			}
-			serve(ctx, l, server.ServeDebug)
-		}
-		if config.Metrics.Address != "" {
-			l, err := net.Listen("tcp", config.Metrics.Address)
-			if err != nil {
-				return errors.Wrapf(err, "failed to get listener for metrics endpoint")
-			}
-			serve(ctx, l, server.ServeMetrics)
-		}
+...
 		// setup the ttrpc endpoint
 		tl, err := sys.GetLocalListener(config.TTRPC.Address, config.TTRPC.UID, config.TTRPC.GID)
 		if err != nil {
 			return errors.Wrapf(err, "failed to get listener for main ttrpc endpoint")
 		}
-		serve(ctx, tl, server.ServeTTRPC)
++		serve(ctx, tl, server.ServeTTRPC)
 
 		if config.GRPC.TCPAddress != "" {
 			l, err := net.Listen("tcp", config.GRPC.TCPAddress)
 			if err != nil {
 				return errors.Wrapf(err, "failed to get listener for TCP grpc endpoint")
 			}
-			serve(ctx, l, server.ServeTCP)
++			serve(ctx, l, server.ServeTCP)
 		}
 		// setup the main grpc endpoint
 		l, err := sys.GetLocalListener(config.GRPC.Address, config.GRPC.UID, config.GRPC.GID)
 		if err != nil {
 			return errors.Wrapf(err, "failed to get listener for main endpoint")
 		}
-		serve(ctx, l, server.ServeGRPC)
++		serve(ctx, l, server.ServeGRPC)
 
 		if err := notifyReady(ctx); err != nil {
 			log.G(ctx).WithError(err).Warn("notify ready failed")
@@ -163,7 +144,10 @@ can be used and modified as necessary as a custom configuration.`
 }
 ```
 ## Server的创建及初始化
-看`***server, err := server.New(ctx, config)***`函数是创建并初始化containerd server，
+看```diff
++ server, err := server.New(ctx, config)
+```
+该函数是创建并初始化containerd server，
 - 准备GRPCServer，TTRPCServer，tcpServer服务接口
 - 加载plugins，逐个p.Init(initContext)
 
@@ -441,17 +425,17 @@ func LoadPlugins(ctx context.Context, config *srvconfig.Config) ([]*plugin.Regis
 ```diff
 	// register services after all plugins have been initialized
 	for _, service := range grpcServices {
-		if err := service.Register(grpcServer); err != nil {
++		if err := service.Register(grpcServer); err != nil {
 			return nil, err
 		}
 	}
 	for _, service := range ttrpcServices {
-		if err := service.RegisterTTRPC(ttrpcServer); err != nil {
++		if err := service.RegisterTTRPC(ttrpcServer); err != nil {
 			return nil, err
 		}
 	}
 	for _, service := range tcpServices {
-		if err := service.RegisterTCP(tcpServer); err != nil {
++		if err := service.RegisterTCP(tcpServer); err != nil {
 			return nil, err
 		}
 	}
