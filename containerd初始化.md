@@ -215,6 +215,7 @@ func New(ctx context.Context, config *srvconfig.Config) (*Server, error) {
 			}
 			initContext.Config = pc
 		}
++		//初始化plugin		
 +		result := p.Init(initContext)
 +		if err := initialized.Add(result); err != nil {
 			return nil, errors.Wrapf(err, "could not add plugin result to plugin set")
@@ -224,15 +225,16 @@ func New(ctx context.Context, config *srvconfig.Config) (*Server, error) {
 ...
 
 		delete(required, reqID)
++		// 把三种类型server的services分别放入各自的列表
 		// check for grpc services that should be registered with the server
 		if src, ok := instance.(plugin.Service); ok {
-			grpcServices = append(grpcServices, src)
++			grpcServices = append(grpcServices, src)
 		}
 		if src, ok := instance.(plugin.TTRPCService); ok {
-			ttrpcServices = append(ttrpcServices, src)
++			ttrpcServices = append(ttrpcServices, src)
 		}
 		if service, ok := instance.(plugin.TCPService); ok {
-			tcpServices = append(tcpServices, service)
++			tcpServices = append(tcpServices, service)
 		}
 
 		s.plugins = append(s.plugins, result)
@@ -245,6 +247,7 @@ func New(ctx context.Context, config *srvconfig.Config) (*Server, error) {
 		return nil, errors.Errorf("required plugin %s not included", missing)
 	}
 
++	//按照server类型注册services
 	// register services after all plugins have been initialized
 	for _, service := range grpcServices {
 		if err := service.Register(grpcServer); err != nil {
@@ -406,4 +409,42 @@ func LoadPlugins(ctx context.Context, config *srvconfig.Config) ([]*plugin.Regis
 			return nil, err
 		}
 	}
+```
+
+## 以grpc server为例，如何安装serve function
+```diff
+		l, err := sys.GetLocalListener(config.GRPC.Address, config.GRPC.UID, config.GRPC.GID)
+		serve(ctx, l, server.ServeGRPC)
+```
+
+https://github.com/containerd/containerd/blob/d0be7b90f1306d2c7d59e28d3ffd74eddcddfa21/cmd/containerd/command/main.go#L259
+```diff
+func serve(ctx gocontext.Context, l net.Listener, serveFunc func(net.Listener) error) {
+	path := l.Addr().String()
+	log.G(ctx).WithField("address", path).Info("serving...")
+	serveSpan, ctx := tracing.StartSpan(ctx, l.Addr().String())
+	defer tracing.StopSpan(serveSpan)
+
+	go func() {
+		defer l.Close()
++		if err := serveFunc(l); err != nil {
+			log.G(ctx).WithError(err).WithField("address", path).Fatal("serve failure")
+		}
+	}()
+}
+```
+(https://github.com/containerd/containerd/blob/d0be7b90f1306d2c7d59e28d3ffd74eddcddfa21/services/server/server.go#L263)
+```diff
+// ServeGRPC provides the containerd grpc APIs on the provided listener
+func (s *Server) ServeGRPC(l net.Listener) error {
+	if s.config.Metrics.GRPCHistogram {
+		// enable grpc time histograms to measure rpc latencies
+		grpc_prometheus.EnableHandlingTimeHistogram()
+	}
+	// before we start serving the grpc API register the grpc_prometheus metrics
+	// handler.  This needs to be the last service registered so that it can collect
+	// metrics for every other service
+	grpc_prometheus.Register(s.grpcServer)
++	return trapClosedConnErr(s.grpcServer.Serve(l))
+}
 ```
