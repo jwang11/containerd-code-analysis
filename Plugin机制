@@ -1,7 +1,7 @@
-#Containerd里的Plugin
+# Containerd里的Plugin
 >containerd使用了Plugin注册机制，将task、content、snapshot、namespace、event、containers等服务以插件的方式注册然后提供服务。
 
-##Plugin的类型，目前有12种
+## Plugin的类型，目前有12种
 ```
 const (
 	// InternalPlugin implements an internal plugin to containerd
@@ -31,7 +31,7 @@ const (
 )
 ```
 
-##Plugin的注册是基于Registration结构
+## Plugin的注册是基于Registration结构
 ```
 // Registration contains information for registering a plugin
 type Registration struct {
