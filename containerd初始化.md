@@ -144,7 +144,8 @@ can be used and modified as necessary as a custom configuration.`
 }
 ```
 ## Server的创建及初始化
-看```diff
+关键的函数是
+```diff
 + server, err := server.New(ctx, config)
 ```
 该函数是创建并初始化containerd server，
