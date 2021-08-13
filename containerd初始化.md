@@ -299,11 +299,11 @@ func New(ctx context.Context, config *srvconfig.Config) (*Server, error) {
 ```
 
 ## 加载Plugins
-
 - 按照Load方式不同，有两类Plugins，一是从指定路径自动加载，二是程序里手动加载，如ContentPlugin, MetadataPlugin
-```
+
+```diff
 func LoadPlugins(ctx context.Context, config *srvconfig.Config) ([]*plugin.Registration, error) {
-//自动加载Plugins，通常被编译成binary，放在指定的目录下
++ //自动加载Plugins，通常被编译成binary，放在指定的目录下
 	// load all plugins into containerd
 	path := config.PluginDir
 	if path == "" {
@@ -312,7 +312,7 @@ func LoadPlugins(ctx context.Context, config *srvconfig.Config) ([]*plugin.Regis
 	if err := plugin.Load(path); err != nil {
 		return nil, err
 	}
-//手动加载Plugin
++ //手动加载Plugin
 	// load additional plugins that don't automatically register themselves
 	plugin.Register(&plugin.Registration{
 		Type: plugin.ContentPlugin,
@@ -400,8 +400,8 @@ func LoadPlugins(ctx context.Context, config *srvconfig.Config) ([]*plugin.Regis
 	// return the ordered graph for plugins
 	return plugin.Graph(filter(config.DisabledPlugins)), nil
 }
-
 ```
+
 ## 创建底层Server，包括了三种：grpcServer，和ttrpcServer，tcpServer
 ```diff
 +	ttrpcServer, err := newTTRPCServer()
