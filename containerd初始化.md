@@ -418,7 +418,7 @@ func LoadPlugins(ctx context.Context, config *srvconfig.Config) ([]*plugin.Regis
 }
 
 ```
-## 创建grpcServer
+## 创建底层Server，包括了三种：grpcServer，和ttrpcServer，tcpServer
 ```diff
 +	ttrpcServer, err := newTTRPCServer()
 +	tcpServerOpts := serverOpts
@@ -436,4 +436,23 @@ func LoadPlugins(ctx context.Context, config *srvconfig.Config) ([]*plugin.Regis
 +			ttrpcServer: ttrpcServer,
 +			config:      config,
 +		}
+```
+## 根据加载的plugins，分别为三种server注册service
+```diff
+	// register services after all plugins have been initialized
+	for _, service := range grpcServices {
+		if err := service.Register(grpcServer); err != nil {
+			return nil, err
+		}
+	}
+	for _, service := range ttrpcServices {
+		if err := service.RegisterTTRPC(ttrpcServer); err != nil {
+			return nil, err
+		}
+	}
+	for _, service := range tcpServices {
+		if err := service.RegisterTCP(tcpServer); err != nil {
+			return nil, err
+		}
+	}
 ```
