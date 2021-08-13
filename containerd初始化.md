@@ -412,7 +412,7 @@ func LoadPlugins(ctx context.Context, config *srvconfig.Config) ([]*plugin.Regis
 ```
 
 ## 以grpc server为例，如何安装serve function
-- 回到***cmd/containerd/command/main.go***，在完成***newServer()***后，每种server都要被serve一次，表示服务开启。
+- 回到***cmd/containerd/command/main.go***，在完成server创建和初始化后，每种server都要被serve一次，表示服务开启。
 ```diff
 		l, err := sys.GetLocalListener(config.GRPC.Address, config.GRPC.UID, config.GRPC.GID)
 		serve(ctx, l, server.ServeGRPC)
