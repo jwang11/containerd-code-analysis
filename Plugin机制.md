@@ -251,6 +251,7 @@ func (i *InitContext) GetByType(t Type) (map[string]*Plugin, error) {
 func NewContext(ctx context.Context, r *Registration, plugins *Set, root, state string) *InitContext {
 	return &InitContext{
 		Context: ctx,
++		// 比如/var/lib/containerd/io.containerd.content.v1.content		
 		Root:    filepath.Join(root, r.URI()),
 		State:   filepath.Join(state, r.URI()),
 		Meta: &Meta{
