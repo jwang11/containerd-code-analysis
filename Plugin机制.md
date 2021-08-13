@@ -1,7 +1,7 @@
 # Containerd里的Plugin（插件）
 >containerd使用了Plugin注册机制，将task、content、snapshot、namespace、event、containers等服务以插件的方式注册然后提供服务。
 
-### Plugin的类型
+## Plugin的类型
 - 目前共12种
 ```
 const (
@@ -33,7 +33,7 @@ const (
 ```
 - plugin要通过注册和初始化两步，才能被containerd接受。
 
-### Plugin的注册
+## Plugin的注册
 - 注册plugin，必须先定义一个***Registeration***结构，并填好必要的信息。
 ```diff
 // Registration contains information for registering a plugin
@@ -94,7 +94,7 @@ func Register(r *Registration) {
 
 ```
 
-### Plugin的初始化
+## Plugin的初始化
 - Plugin的初始化入口是***Registration.Init***。顺利执行如果没有错误，表示初始化完成，生成***Plugin***结构作为返回结果。
 - InitFn是由plugin提供的初始化函数，它会在Registration.Init里被调用，返回结果存入Registration.instance
 ```diff
@@ -181,7 +181,8 @@ func (ps *Set) Get(t Type) (interface{}, error) {
 }
 ```
 
-### InitContext是Init的参数，提供plugin初始化需要的上下文信息
+### InitContext初始化上下文
+- InitContext是Init的参数，提供plugin初始化需要的上下文信息
 ```diff
 // InitContext is used for plugin inititalization
 type InitContext struct {
@@ -262,7 +263,7 @@ func NewContext(ctx context.Context, r *Registration, plugins *Set, root, state 
 }
 ```
 
-### Plugin完整的注册和初始化过程
+## Plugin完整的注册和初始化过程
 - Plugin注册
 ```diff
 +	plugins, err := LoadPlugins(ctx, config)
