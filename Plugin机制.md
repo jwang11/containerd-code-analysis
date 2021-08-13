@@ -31,7 +31,11 @@ const (
 )
 ```
 
-## Plugin的注册是基于Registration结构
+## Plugin的注册是通过Registration结构
+- plugin被containerd接受前，必须先定义一个Registeration结构，并填好必要的信息。
+- Registration初始化入口是Init， Init执行完后，构造Plugin结构作为返回结果
+- InitFn是由plugin提供的初始化函数，它会在Init里被调用，返回结果存入Registration.instance
+
 ```
 // Registration contains information for registering a plugin
 type Registration struct {
@@ -76,4 +80,48 @@ var register = struct {
 	sync.RWMutex
 	r []*Registration
 }{}
+```
+
+### InitContext是Init的参数，提供plugin初始化需要的上下文信息
+```diff
+// InitContext is used for plugin inititalization
+type InitContext struct {
+	Context      context.Context
++	//plugin的根目录
+	Root         string
+	State        string
+	Config       interface{}
++	//grpc地址
+	Address      string
++	//ttrpc地址
+	TTRPCAddress string
+
+	// deprecated: will be removed in 2.0, use plugin.EventType
+	Events *exchange.Exchange
+
+	Meta *Meta // plugins can fill in metadata at init.
++	//已经注册过的所有同类型plugin集合
+	plugins *Set
+}
+
+// Get returns the first plugin by its type
+func (i *InitContext) Get(t Type) (interface{}, error) {
+	return i.plugins.Get(t)
+}
+```
+
+- 创建InitContext
+```
+// NewContext returns a new plugin InitContext
+func NewContext(ctx context.Context, r *Registration, plugins *Set, root, state string) *InitContext {
+	return &InitContext{
+		Context: ctx,
+		Root:    filepath.Join(root, r.URI()),
+		State:   filepath.Join(state, r.URI()),
+		Meta: &Meta{
+			Exports: map[string]string{},
+		},
+		plugins: plugins,
+	}
+}
 ```
