@@ -219,3 +219,30 @@ func (s *service) Info(ctx context.Context, req *api.InfoRequest) (*api.InfoResp
 	}, nil
 }
 ```
+- Content Service的注册
+[services/content/store.go](https://github.com/containerd/containerd/blob/main/services/content/store.go)
+```
+func init() {
+	plugin.Register(&plugin.Registration{
+		Type: plugin.ServicePlugin,
+		ID:   services.ContentService,
+		Requires: []plugin.Type{
+			plugin.EventPlugin,
+			plugin.MetadataPlugin,
+		},
+		InitFn: func(ic *plugin.InitContext) (interface{}, error) {
+			m, err := ic.Get(plugin.MetadataPlugin)
+			if err != nil {
+				return nil, err
+			}
+			ep, err := ic.Get(plugin.EventPlugin)
+			if err != nil {
+				return nil, err
+			}
+
+			s, err := newContentStore(m.(*metadata.DB).ContentStore(), ep.(events.Publisher))
+			return s, err
+		},
+	})
+}
+```
