@@ -160,4 +160,62 @@ func (s *store) ReaderAt(ctx context.Context, desc ocispec.Descriptor) (content.
 }
 ```
 
-- 
+## Content GRPC注册与Server实现
+- Content GRPC plugin注册
+```
+func init() {
+	plugin.Register(&plugin.Registration{
+		Type: plugin.GRPCPlugin,
+		ID:   "content",
+		Requires: []plugin.Type{
+			plugin.ServicePlugin,
+		},
+		InitFn: func(ic *plugin.InitContext) (interface{}, error) {
+			plugins, err := ic.GetByType(plugin.ServicePlugin)
+			if err != nil {
+				return nil, err
+			}
+			p, ok := plugins[services.ContentService]
+			if !ok {
+				return nil, errors.New("content store service not found")
+			}
+			cs, err := p.Instance()
+			if err != nil {
+				return nil, err
+			}
+			return contentserver.New(cs.(content.Store)), nil
+		},
+	})
+}
+```
+- ***contentserver.New***创建content server
+```
+// New returns the content GRPC server
+func New(cs content.Store) api.ContentServer {
+	return &service{store: cs}
+}
+
+type service struct {
+	store content.Store
+}
+
+func (s *service) Register(server *grpc.Server) error {
+	api.RegisterContentServer(server, s)
+	return nil
+}
+
+func (s *service) Info(ctx context.Context, req *api.InfoRequest) (*api.InfoResponse, error) {
+	if err := req.Digest.Validate(); err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "%q failed validation", req.Digest)
+	}
+
+	bi, err := s.store.Info(ctx, req.Digest)
+	if err != nil {
+		return nil, errdefs.ToGRPC(err)
+	}
+
+	return &api.InfoResponse{
+		Info: infoToGRPC(bi),
+	}, nil
+}
+```
