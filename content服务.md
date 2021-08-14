@@ -65,7 +65,7 @@ type Store interface {
 ```
 
 
--- Manager 提供了基础内容管理方法如内容元信息获取、更新、列表查找、删除
+- Manager 提供了基础内容管理方法如内容元信息获取、更新、列表查找、删除
 ```
 // Manager provides methods for inspecting, listing and removing content.
 type Manager interface {
@@ -90,7 +90,7 @@ type Manager interface {
 	Delete(ctx context.Context, dgst digest.Digest) error
 }
 ```
--- Provider 提供了 content 的读取接口，返回一个内容读取器对象 ReaderAt
+- Provider 提供了 content 的读取接口，返回一个内容读取器对象 ReaderAt
 ```
 // Provider provides a reader interface for specific content
 type Provider interface {
@@ -116,7 +116,7 @@ type IngestManager interface {
 	Abort(ctx context.Context, ref string) error
 }
 ```
--- Ingester 提供了 content 的存写接口，返回一个内容写入器对象 Writer
+- Ingester 提供了 content 的存写接口，返回一个内容写入器对象 Writer
 ```
 // Writer handles the write of content into a content store
 type Writer interface {
