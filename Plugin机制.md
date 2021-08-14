@@ -31,19 +31,22 @@ const (
 	EventPlugin Type = "io.containerd.event.v1"
 )
 ```
-- plugin要通过注册和初始化两步，才能被containerd接受。
+- plugin要通过注册和初始化两步，才能在containerd里生效。
 
 ## Plugin的注册
-- 注册plugin，必须先定义一个***Registeration***结构，并填好必要的信息。
+- 注册plugin，必须先定义一个***Registeration***结构作为注册申请，并填好必要的信息。
 ```diff
 // Registration contains information for registering a plugin
 type Registration struct {
++	// 类型，就是12种之一
 	// Type of the plugin
 	Type Type
++	// 唯一的ID，同类型可以多个Plugin	
 	// ID of the plugin
 	ID string
 	// Config specific to the plugin
 	Config interface{}
++	// 依赖的plugins，必须是已经注册过的
 	// Requires is a list of plugins that the registered plugin requires to be available
 	Requires []Type
 
@@ -61,7 +64,7 @@ func (r *Registration) URI() string {
 }
 ```
 - 调用***plugin.Register***函数，把***Registration***结构作为该函数的参数。
-- 系统定义了一个全局变量register，所有注册的Registration都放在register.Registration数组里
+- 系统定义了一个全局变量***register***，所有注册的Registration都放在***register.Registration***数组里
 ```diff
 var register = struct {
 	sync.RWMutex
@@ -96,7 +99,7 @@ func Register(r *Registration) {
 
 ## Plugin的初始化
 - Plugin的初始化入口是***Registration.Init***。顺利执行如果没有错误，表示初始化完成，生成***Plugin***结构作为返回结果。
-- InitFn是由plugin提供的初始化函数，它会在Registration.Init里被调用，返回结果存入Registration.instance
+- ***InitFn***是由plugin提供的初始化函数，它会在***Registration.Init***里被调用，返回结果（通常是service）存入***Registration.instance***。
 ```diff
 // Init the registered plugin
 func (r *Registration) Init(ic *InitContext) *Plugin {
@@ -182,7 +185,7 @@ func (ps *Set) Get(t Type) (interface{}, error) {
 ```
 
 ### InitContext初始化上下文
-- InitContext是Init的参数，提供plugin初始化需要的上下文信息
+- ***InitContext***是Init函数的入口参数，提供plugin初始化需要的上下文信息
 ```diff
 // InitContext is used for plugin inititalization
 type InitContext struct {
@@ -340,8 +343,8 @@ func LoadPlugins(ctx context.Context, config *srvconfig.Config) ([]*plugin.Regis
 +		if err := initialized.Add(result); err != nil {
 			return nil, errors.Wrapf(err, "could not add plugin result to plugin set")
 		}
-
-		instance, err := result.Instance()
++		// instance里放的是plugin需要输出的service
++		instance, err := result.Instance()
 ...
 
 		delete(required, reqID)
