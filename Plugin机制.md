@@ -33,9 +33,16 @@ const (
 ```
 主要分成三个层次。
 1. GPRCPlugin属于顶层，包括
-  - content
-  - snapshot
-
+  	- content
+  	- snapshots
+  	- image
+	- diff
+	- containers
+	- events
+	- tasks
+	- namespaces
+	- leases
+	- introspection
 
 2. ServicePlugin属于服务层，包括
 ```
