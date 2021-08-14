@@ -3,6 +3,8 @@
 ---
 >Containerd是一个工业标准的容器运行时，重点是它简洁，健壮，便携，在Linux和window上可以作为一个守护进程运行，它可以管理主机系统上容器的完整的生命周期：镜像传输和存储，容器的执行和监控，低级别的存储和网络。
 
+### 主程序
+
 [cmd/containerd/main.go](https://github.com/containerd/containerd/blob/main/cmd/containerd/main.go)是入口文件，看起来非常简洁
 
 ```
@@ -143,7 +145,7 @@ can be used and modified as necessary as a custom configuration.`
 	return app
 }
 ```
-## Server的创建及初始化
+### Server的创建及初始化
 关键的函数是
 ```diff
 + server, err := server.New(ctx, config)
@@ -268,7 +270,7 @@ func New(ctx context.Context, config *srvconfig.Config) (*Server, error) {
 }
 ```
 
-## 加载Plugins
+### 加载Plugins
 - 按照Load方式不同，有两类Plugins，一是从指定路径自动加载，二是程序里手动加载，如ContentPlugin, MetadataPlugin
 
 ```diff
@@ -372,7 +374,8 @@ func LoadPlugins(ctx context.Context, config *srvconfig.Config) ([]*plugin.Regis
 }
 ```
 
-## 创建底层Server，包括了三种：grpcServer，和ttrpcServer，tcpServer
+### 创建底层Server
+- 有3种server：grpcServer，和ttrpcServer，tcpServer
 ```diff
 +	ttrpcServer, err := newTTRPCServer()
 +	tcpServerOpts := serverOpts
@@ -391,7 +394,7 @@ func LoadPlugins(ctx context.Context, config *srvconfig.Config) ([]*plugin.Regis
 +			config:      config,
 +		}
 ```
-## 根据加载的plugins，分别为三种server注册service
+- 根据加载的plugins，分别为3种server注册service
 ```diff
 	// register services after all plugins have been initialized
 	for _, service := range grpcServices {
@@ -411,7 +414,7 @@ func LoadPlugins(ctx context.Context, config *srvconfig.Config) ([]*plugin.Regis
 	}
 ```
 
-## 以grpc server为例，如何安装serve function
+- 以grpc server为例，安装serve function
 - 回到***cmd/containerd/command/main.go***，在完成server创建和初始化后，每种server都要被serve一次，表示服务开启。
 ```diff
 		l, err := sys.GetLocalListener(config.GRPC.Address, config.GRPC.UID, config.GRPC.GID)
