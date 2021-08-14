@@ -100,7 +100,7 @@ type Provider interface {
 	ReaderAt(ctx context.Context, desc ocispec.Descriptor) (ReaderAt, error)
 }
 ```
--- IngestManager 写管理接口(存写状态获取、中止操作)
+- IngestManager 写管理接口(存写状态获取、中止操作)
 ```
 // IngestManager provides methods for managing ingests.
 type IngestManager interface {
