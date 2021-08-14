@@ -2,7 +2,10 @@
 >containerd使用了Plugin注册机制，将task、content、snapshot、namespace、event、containers等服务以插件的方式注册然后提供服务。
 
 ## Plugin的类型
-- 目前共12种
+- 目前共12种，典型的分成三个层次
+1. GPRCPlugin属于顶层
+2. ServicePlugin属于服务层，包括ContentService,SnapshotService
+3. SnapshotPlugin, ContentPlugin,MetadataPlugin属于底层实现
 ```
 const (
 	// InternalPlugin implements an internal plugin to containerd
@@ -140,7 +143,7 @@ func (p *Plugin) Instance() (interface{}, error) {
 ```
 
 - Plugin ***Set***代表一个Plugin集合，在后面InitContext会使用到
-```
+```diff
 // Set defines a plugin collection, used with InitContext.
 //
 // This maintains ordering and unique indexing over the set.
@@ -175,6 +178,7 @@ func (ps *Set) Add(p *Plugin) error {
 	return nil
 }
 
++ //返回该类型的第一个plugin
 // Get returns the first plugin by its type
 func (ps *Set) Get(t Type) (interface{}, error) {
 	for _, v := range ps.byTypeAndID[t] {
