@@ -2,10 +2,7 @@
 >containerd使用了Plugin注册机制，将task、content、snapshot、namespace、event、containers等服务以插件的方式注册然后提供服务。
 
 ## Plugin的类型
-- 目前共12种，典型的分成三个层次。
-1. GPRCPlugin属于顶层，包括content,snapshot
-2. ServicePlugin属于服务层，包括services.ContentService，services.SnapshotService
-3. SnapshotPlugin，ContentPlugin，MetadataPlugin属于底层实现。
+- 目前共12种Plugin，
 ```
 const (
 	// InternalPlugin implements an internal plugin to containerd
@@ -34,6 +31,37 @@ const (
 	EventPlugin Type = "io.containerd.event.v1"
 )
 ```
+主要分成三个层次。
+1. GPRCPlugin属于顶层，包括
+  - content
+  - snapshot
+
+
+2. ServicePlugin属于服务层，包括
+```
+const (
+	// ContentService is id of content service.
+	ContentService = "content-service"
+	// SnapshotsService is id of snapshots service.
+	SnapshotsService = "snapshots-service"
+	// ImagesService is id of images service.
+	ImagesService = "images-service"
+	// ContainersService is id of containers service.
+	ContainersService = "containers-service"
+	// TasksService is id of tasks service.
+	TasksService = "tasks-service"
+	// NamespacesService is id of namespaces service.
+	NamespacesService = "namespaces-service"
+	// LeasesService is id of leases service.
+	LeasesService = "leases-service"
+	// DiffService is id of diff service.
+	DiffService = "diff-service"
+	// IntrospectionService is the id of introspection service
+	IntrospectionService = "introspection-service"
+)
+```
+3. SnapshotPlugin，ContentPlugin，MetadataPlugin属于底层实现。
+
 - plugin要通过注册和初始化两步，才能在containerd里生效。
 
 ## Plugin的注册
