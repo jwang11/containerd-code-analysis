@@ -2,7 +2,9 @@
 > Content是提供数据存储和查询的服务，主要包括index、manifests、config.json、image layer。Content主要用来进行独立执行或者测试使用，查询通常还是通过metadata。
 
 ## Content服务的初始化
+
 - Content是在***loadPlugins***里被注册的，***InitFn***返回content.Store对象
+(https://github.com/containerd/containerd/blob/main/services/server/server.go)
 ```
 	// load additional plugins that don't automatically register themselves
 	plugin.Register(&plugin.Registration{
@@ -14,7 +16,7 @@
 		},
 	})
 ```
-
+(https://github.com/containerd/containerd/blob/main/content/local/store.go)
 ```
 // NewStore returns a local content store
 func NewStore(root string) (content.Store, error) {
@@ -161,7 +163,7 @@ func (s *store) ReaderAt(ctx context.Context, desc ocispec.Descriptor) (content.
 ```
 
 ## Content GRPC注册与Server实现
-- Content GRPC plugin注册
+- Content GRPC注册
 ```
 func init() {
 	plugin.Register(&plugin.Registration{
@@ -244,5 +246,18 @@ func init() {
 			return s, err
 		},
 	})
+}
+
+func newContentStore(cs content.Store, publisher events.Publisher) (content.Store, error) {
+	return &store{
+		Store:     cs,
+		publisher: publisher,
+	}, nil
+}
+
+// store wraps content.Store with proper event published.
+type store struct {
+	content.Store
+	publisher events.Publisher
 }
 ```
