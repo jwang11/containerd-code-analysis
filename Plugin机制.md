@@ -178,7 +178,7 @@ func (ps *Set) Add(p *Plugin) error {
 	return nil
 }
 
-+ //返回该类型的第一个plugin
++ //返回该类型的第一个plugin的Instance
 // Get returns the first plugin by its type
 func (ps *Set) Get(t Type) (interface{}, error) {
 	for _, v := range ps.byTypeAndID[t] {
