@@ -31,7 +31,7 @@ const (
 	EventPlugin Type = "io.containerd.event.v1"
 )
 ```
-主要分成三个层次。
+Plugin类型主要分成三个层次。
 1. GPRCPlugin属于顶层，包括
   	- content
   	- snapshots
