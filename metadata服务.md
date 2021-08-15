@@ -234,7 +234,7 @@ type contentStore struct {
 ```
 
 ### contentStores实现
-- contentStore结构里面包括了content.Store接口，同样需要实现content.Store接口
+- contentStore结构里面包括了content.Store接口，但为了支持namespace等feature，重新了部分content.Store接口
 - ***Info***是实现label的读取以及create/update时间戳。根据digest作为key，查找bolt数据库，返回键值对
 ```
 func (cs *contentStore) Info(ctx context.Context, dgst digest.Digest) (content.Info, error) {
