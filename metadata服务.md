@@ -134,6 +134,7 @@ type store struct {
 
 ### Metadata DB的实现
 - Metadata DB包括了bolt数据库，新的***contentStore***（基于contentPlugin里的content.Store），snapshotters
+```
 / DB represents a metadata database backed by a bolt
 // database. The database is fully namespaced and stores
 // image, container, namespace, snapshot, and content data
@@ -222,9 +223,18 @@ func newContentStore(db *DB, shared bool, cs content.Store) *contentStore {
 		shared: shared,
 	}
 }
+
+
+type contentStore struct {
+	content.Store
+	db     *DB
+	shared bool
+	l      sync.RWMutex
+}
 ```
 
-### cotentStore同样需要实现content.Store接口
+### contentStores实现
+- contentStore结构里面包括了content.Store接口，同样需要实现content.Store接口
 - ***Info***是实现label的读取以及create/update时间戳。根据digest作为key，查找bolt数据库，返回键值对
 ```
 func (cs *contentStore) Info(ctx context.Context, dgst digest.Digest) (content.Info, error) {
