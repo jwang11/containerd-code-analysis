@@ -225,7 +225,7 @@ func newContentStore(db *DB, shared bool, cs content.Store) *contentStore {
 ```
 
 ### cotentStore同样需要实现content.Store接口
-- Info实现。根据digest作为key，查找bolt数据库，返回键值对
+- ***Info***是实现label的读取以及create/update时间戳。根据digest作为key，查找bolt数据库，返回键值对
 ```
 func (cs *contentStore) Info(ctx context.Context, dgst digest.Digest) (content.Info, error) {
 	ns, err := namespaces.NamespaceRequired(ctx)
@@ -271,7 +271,7 @@ func readInfo(info *content.Info, bkt *bolt.Bucket) error {
 	return nil
 }
 ```
-- Update实现
+- Update实现label的写入，同时更新时间戳
 ```
 func (cs *contentStore) Update(ctx context.Context, info content.Info, fieldpaths ...string) (content.Info, error) {
 	ns, err := namespaces.NamespaceRequired(ctx)
