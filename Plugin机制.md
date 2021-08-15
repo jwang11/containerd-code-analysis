@@ -67,13 +67,14 @@ const (
 	IntrospectionService = "introspection-service"
 )
 ```
-3. 以*ServiceName*+Plugin命名的属于外部Service的底层实现和内部服务。
+3. 以*ServiceName*+Plugin命名的是Service的底层实现以及一些内部功能模块。
 	- ContentPlugin
 	- SnapshotPlugin
 	- DiffPlugin
 	- MetadataPlugin
 	- EventPlugin
 	- TaskMonitorPlugin
+	- GCPlugin
 
 - plugin要通过注册和初始化两步，才能在containerd里生效。
 
