@@ -252,6 +252,24 @@ func (cs *contentStore) Info(ctx context.Context, dgst digest.Digest) (content.I
 
 	return info, nil
 }
+
+func readInfo(info *content.Info, bkt *bolt.Bucket) error {
+	if err := boltutil.ReadTimestamps(bkt, &info.CreatedAt, &info.UpdatedAt); err != nil {
+		return err
+	}
+
+	labels, err := boltutil.ReadLabels(bkt)
+	if err != nil {
+		return err
+	}
+	info.Labels = labels
+
+	if v := bkt.Get(bucketKeySize); len(v) > 0 {
+		info.Size, _ = binary.Varint(v)
+	}
+
+	return nil
+}
 ```
 - Update实现
 ```
