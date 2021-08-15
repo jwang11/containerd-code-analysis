@@ -198,6 +198,7 @@ func NewDB(db *bolt.DB, cs content.Store, ss map[string]snapshots.Snapshotter, o
 
 	return m
 }
+```
 
 - newContentStore会返回一个有Namespace的Content Store
 ```
@@ -223,7 +224,6 @@ func newContentStore(db *DB, shared bool, cs content.Store) *contentStore {
 		shared: shared,
 	}
 }
-
 
 type contentStore struct {
 	content.Store
