@@ -2,9 +2,11 @@
 
 ## Metadata服务的初始化
 
-- Metadata服务是在***loadPlugins***里被注册的，它依赖Content和Snapshot插件，***InitFn***返回metadata.DB对象
+- Metadata服务是在***loadPlugins***里被注册的，它依赖ContentPlugin和SnapshotPlugin，***InitFn***返回metadata.DB对象
 (https://github.com/containerd/containerd/blob/main/services/server/server.go)
 ```diff
+func LoadPlugins(ctx context.Context, config *srvconfig.Config) ([]*plugin.Registration, error) {
+...
 	// load additional plugins that don't automatically register themselves
 	plugin.Register(&plugin.Registration{
 		Type: plugin.ContentPlugin,
@@ -29,6 +31,7 @@
 			if err := os.MkdirAll(ic.Root, 0711); err != nil {
 				return nil, err
 			}
++			// 得到第一个ContentPlugin的instance，也就是content.Store
 			cs, err := ic.Get(plugin.ContentPlugin)
 			if err != nil {
 				return nil, err
@@ -49,7 +52,8 @@
 					}
 					continue
 				}
-				snapshotters[name] = sn.(snapshots.Snapshotter)
++				// 得到所有的Snapshotter				
++				snapshotters[name] = sn.(snapshots.Snapshotter)
 			}
 
 			shared := true
@@ -80,13 +84,15 @@
 			if !shared {
 				dbopts = append(dbopts, metadata.WithPolicyIsolated)
 			}
-			mdb := metadata.NewDB(db, cs.(content.Store), snapshotters, dbopts...)
++			mdb := metadata.NewDB(db, cs.(content.Store), snapshotters, dbopts...)
 			if err := mdb.Init(ic.Context); err != nil {
 				return nil, err
 			}
 			return mdb, nil
 		},
 	})
+...
+}
 ```
 
 ### ContentPlugin注册
@@ -127,32 +133,7 @@ type store struct {
 ```
 
 ### Metadata DB的实现
-```
-// NewDB creates a new metadata database using the provided
-// bolt database, content store, and snapshotters.
-func NewDB(db *bolt.DB, cs content.Store, ss map[string]snapshots.Snapshotter, opts ...DBOpt) *DB {
-	m := &DB{
-		db:      db,
-		ss:      make(map[string]*snapshotter, len(ss)),
-		dirtySS: map[string]struct{}{},
-		dbopts: dbOptions{
-			shared: true,
-		},
-	}
-
-	for _, opt := range opts {
-		opt(&m.dbopts)
-	}
-
-	// Initialize data stores
-	m.cs = newContentStore(m, m.dbopts.shared, cs)
-	for name, sn := range ss {
-		m.ss[name] = newSnapshotter(m, name, sn)
-	}
-
-	return m
-}
-
+- Metadata DB包括了bolt数据库，新的***contentStore***（基于contentPlugin里的content.Store），snapshotters
 / DB represents a metadata database backed by a bolt
 // database. The database is fully namespaced and stores
 // image, container, namespace, snapshot, and content data
@@ -189,6 +170,34 @@ type DB struct {
 	dbopts dbOptions
 }
 ```
+
+- 创建Metadata DB
+```
+// NewDB creates a new metadata database using the provided
+// bolt database, content store, and snapshotters.
+func NewDB(db *bolt.DB, cs content.Store, ss map[string]snapshots.Snapshotter, opts ...DBOpt) *DB {
+	m := &DB{
+		db:      db,
+		ss:      make(map[string]*snapshotter, len(ss)),
+		dirtySS: map[string]struct{}{},
+		dbopts: dbOptions{
+			shared: true,
+		},
+	}
+
+	for _, opt := range opts {
+		opt(&m.dbopts)
+	}
+
+	// Initialize data stores
+	m.cs = newContentStore(m, m.dbopts.shared, cs)
+	for name, sn := range ss {
+		m.ss[name] = newSnapshotter(m, name, sn)
+	}
+
+	return m
+}
+
 - newContentStore会返回一个有Namespace的Content Store
 ```
 // newContentStore returns a namespaced content store using an existing
@@ -212,5 +221,109 @@ func newContentStore(db *DB, shared bool, cs content.Store) *contentStore {
 		db:     db,
 		shared: shared,
 	}
+}
+```
+
+### cotentStore同样需要实现content.Store接口
+- Info实现。根据digest作为key，查找bolt数据库，返回键值对
+```
+func (cs *contentStore) Info(ctx context.Context, dgst digest.Digest) (content.Info, error) {
+	ns, err := namespaces.NamespaceRequired(ctx)
+	if err != nil {
+		return content.Info{}, err
+	}
+
+	var info content.Info
+	if err := view(ctx, cs.db, func(tx *bolt.Tx) error {
+		bkt := getBlobBucket(tx, ns, dgst)
+		if bkt == nil {
+			// try to find shareable bkt before erroring
+			bkt = getShareableBucket(tx, dgst)
+		}
+		if bkt == nil {
+			return errors.Wrapf(errdefs.ErrNotFound, "content digest %v", dgst)
+		}
+
+		info.Digest = dgst
+		return readInfo(&info, bkt)
+	}); err != nil {
+		return content.Info{}, err
+	}
+
+	return info, nil
+}
+```
+- Update实现
+```
+func (cs *contentStore) Update(ctx context.Context, info content.Info, fieldpaths ...string) (content.Info, error) {
+	ns, err := namespaces.NamespaceRequired(ctx)
+	if err != nil {
+		return content.Info{}, err
+	}
+
+	cs.l.RLock()
+	defer cs.l.RUnlock()
+
+	updated := content.Info{
+		Digest: info.Digest,
+	}
+	if err := update(ctx, cs.db, func(tx *bolt.Tx) error {
+		bkt := getBlobBucket(tx, ns, info.Digest)
+		if bkt == nil {
+			// try to find a shareable bkt before erroring
+			bkt = getShareableBucket(tx, info.Digest)
+		}
+		if bkt == nil {
+			return errors.Wrapf(errdefs.ErrNotFound, "content digest %v", info.Digest)
+		}
+		if err := readInfo(&updated, bkt); err != nil {
+			return errors.Wrapf(err, "info %q", info.Digest)
+		}
+
+		if len(fieldpaths) > 0 {
+			for _, path := range fieldpaths {
+				if strings.HasPrefix(path, "labels.") {
+					if updated.Labels == nil {
+						updated.Labels = map[string]string{}
+					}
+
+					key := strings.TrimPrefix(path, "labels.")
+					updated.Labels[key] = info.Labels[key]
+					continue
+				}
+
+				switch path {
+				case "labels":
+					updated.Labels = info.Labels
+				default:
+					return errors.Wrapf(errdefs.ErrInvalidArgument, "cannot update %q field on content info %q", path, info.Digest)
+				}
+			}
+		} else {
+			// Set mutable fields
+			updated.Labels = info.Labels
+		}
+		if err := validateInfo(&updated); err != nil {
+			return err
+		}
+
+		updated.UpdatedAt = time.Now().UTC()
+		return writeInfo(&updated, bkt)
+	}); err != nil {
+		return content.Info{}, err
+	}
+	return updated, nil
+}
+
+// update gets a writable bolt db transaction either from the context
+// or starts a new one with the provided bolt database.
+func update(ctx context.Context, db transactor, fn func(*bolt.Tx) error) error {
+	tx, ok := ctx.Value(transactionKey{}).(*bolt.Tx)
+	if !ok {
+		return db.Update(fn)
+	} else if !tx.Writable() {
+		return errors.Wrap(bolt.ErrTxNotWritable, "unable to use transaction from context")
+	}
+	return fn(tx)
 }
 ```
