@@ -32,7 +32,7 @@ const (
 )
 ```
 Plugin类型主要分成三个层次。
-1. GPRCPlugin属于顶层，包括
+1. GPRCPlugin属于顶层，把containerd里的各种service通过GRPC提供给Client使用，它包括
   	- content
   	- snapshots
   	- image
@@ -44,7 +44,7 @@ Plugin类型主要分成三个层次。
 	- leases
 	- introspection
 
-2. ServicePlugin属于服务层，包括
+2. ServicePlugin属于服务层，定义了containerd里的各种service，它包括
 ```
 const (
 	// ContentService is id of content service.
@@ -67,7 +67,13 @@ const (
 	IntrospectionService = "introspection-service"
 )
 ```
-3. SnapshotPlugin，ContentPlugin，MetadataPlugin属于底层实现。
+3. 以*ServiceName*+Plugin命名的属于外部Service的底层实现和内部服务。
+	- ContentPlugin
+	- SnapshotPlugin
+	- DiffPlugin
+	- MetadataPlugin
+	- EventPlugin
+	- TaskMonitorPlugin
 
 - plugin要通过注册和初始化两步，才能在containerd里生效。
 
