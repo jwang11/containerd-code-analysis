@@ -3,7 +3,7 @@
 
 
 
-### ***Store***接口实现
+### ***Content.Store***接口定义
 - Store定义了4类接口
 ```
 // Store combines the methods of content-oriented interfaces into a set that
