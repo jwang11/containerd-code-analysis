@@ -471,6 +471,27 @@ func (s *imageStore) Delete(ctx context.Context, name string, opts ...images.Del
 ```
 
 ### 外部Service接口的实现
+- ImageServer的外部service接口
+```
+// ImagesServer is the server API for Images service.
+type ImagesServer interface {
+	// Get returns an image by name.
+	Get(context.Context, *GetImageRequest) (*GetImageResponse, error)
+	// List returns a list of all images known to containerd.
+	List(context.Context, *ListImagesRequest) (*ListImagesResponse, error)
+	// Create an image record in the metadata store.
+	//
+	// The name of the image must be unique.
+	Create(context.Context, *CreateImageRequest) (*CreateImageResponse, error)
+	// Update assigns the name to a given target image based on the provided
+	// image.
+	Update(context.Context, *UpdateImageRequest) (*UpdateImageResponse, error)
+	// Delete deletes the image by name.
+	Delete(context.Context, *DeleteImageRequest) (*types1.Empty, error)
+}
+```
+
+- Service的实现
 ```
 type service struct {
 	local imagesapi.ImagesClient
