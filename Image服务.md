@@ -203,8 +203,273 @@ type Image struct {
 
 	CreatedAt, UpdatedAt time.Time
 }
-
 ```
+- imageStore是基于metadata.DB上封装
+```
+type imageStore struct {
+	db *DB
+}
+
+// NewImageStore returns a store backed by a bolt DB
+func NewImageStore(db *DB) images.Store {
+	return &imageStore{db: db}
+}
+```
+
+- imageStore.Get
+```
+func (s *imageStore) Get(ctx context.Context, name string) (images.Image, error) {
+	var image images.Image
+
+	namespace, err := namespaces.NamespaceRequired(ctx)
+	if err != nil {
+		return images.Image{}, err
+	}
+
+	if err := view(ctx, s.db, func(tx *bolt.Tx) error {
+		bkt := getImagesBucket(tx, namespace)
+		if bkt == nil || bkt.Bucket([]byte(name)) == nil {
+			nsbkt := getNamespacesBucket(tx)
+			cur := nsbkt.Cursor()
+			for k, _ := cur.First(); k != nil; k, _ = cur.Next() {
+				// If this namespace has the sharedlabel
+				if hasSharedLabel(tx, string(k)) {
+					// and has the image we are looking for
+					bkt = getImagesBucket(tx, string(k))
+					if bkt == nil {
+						continue
+					}
+
+					ibkt := bkt.Bucket([]byte(name))
+					if ibkt == nil {
+						continue
+					}
+					// we are done
+					break
+				}
+
+			}
+		}
+		if bkt == nil {
+			return errors.Wrapf(errdefs.ErrNotFound, "image %q", name)
+		}
+
+		ibkt := bkt.Bucket([]byte(name))
+		if ibkt == nil {
+			return errors.Wrapf(errdefs.ErrNotFound, "image %q", name)
+		}
+
+		image.Name = name
+		if err := readImage(&image, ibkt); err != nil {
+			return errors.Wrapf(err, "image %q", name)
+		}
+
+		return nil
+	}); err != nil {
+		return images.Image{}, err
+	}
+
+	return image, nil
+}
+```
+
+- imageStore.List
+```
+func (s *imageStore) List(ctx context.Context, fs ...string) ([]images.Image, error) {
+	namespace, err := namespaces.NamespaceRequired(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	filter, err := filters.ParseAll(fs...)
+	if err != nil {
+		return nil, errors.Wrap(errdefs.ErrInvalidArgument, err.Error())
+	}
+
+	var m []images.Image
+	if err := view(ctx, s.db, func(tx *bolt.Tx) error {
+		bkt := getImagesBucket(tx, namespace)
+		if bkt == nil {
+			return nil // empty store
+		}
+
+		return bkt.ForEach(func(k, v []byte) error {
+			var (
+				image = images.Image{
+					Name: string(k),
+				}
+				kbkt = bkt.Bucket(k)
+			)
+
+			if err := readImage(&image, kbkt); err != nil {
+				return err
+			}
+
+			if filter.Match(adaptImage(image)) {
+				m = append(m, image)
+			}
+			return nil
+		})
+	}); err != nil {
+		return nil, err
+	}
+
+	return m, nil
+}
+```
+
+- imageStore.Create
+```
+func (s *imageStore) Create(ctx context.Context, image images.Image) (images.Image, error) {
+	namespace, err := namespaces.NamespaceRequired(ctx)
+	if err != nil {
+		return images.Image{}, err
+	}
+
+	if err := update(ctx, s.db, func(tx *bolt.Tx) error {
+		if err := validateImage(&image); err != nil {
+			return err
+		}
+
+		bkt, err := createImagesBucket(tx, namespace)
+		if err != nil {
+			return err
+		}
+
+		ibkt, err := bkt.CreateBucket([]byte(image.Name))
+		if err != nil {
+			if err != bolt.ErrBucketExists {
+				return err
+			}
+
+			return errors.Wrapf(errdefs.ErrAlreadyExists, "image %q", image.Name)
+		}
+
+		image.CreatedAt = time.Now().UTC()
+		image.UpdatedAt = image.CreatedAt
+		return writeImage(ibkt, &image)
+	}); err != nil {
+		return images.Image{}, err
+	}
+
+	return image, nil
+}
+```
+- imageStore.Update
+```
+func (s *imageStore) Update(ctx context.Context, image images.Image, fieldpaths ...string) (images.Image, error) {
+	namespace, err := namespaces.NamespaceRequired(ctx)
+	if err != nil {
+		return images.Image{}, err
+	}
+
+	if image.Name == "" {
+		return images.Image{}, errors.Wrapf(errdefs.ErrInvalidArgument, "image name is required for update")
+	}
+
+	var updated images.Image
+
+	if err := update(ctx, s.db, func(tx *bolt.Tx) error {
+		bkt, err := createImagesBucket(tx, namespace)
+		if err != nil {
+			return err
+		}
+
+		ibkt := bkt.Bucket([]byte(image.Name))
+		if ibkt == nil {
+			return errors.Wrapf(errdefs.ErrNotFound, "image %q", image.Name)
+		}
+
+		if err := readImage(&updated, ibkt); err != nil {
+			return errors.Wrapf(err, "image %q", image.Name)
+		}
+		createdat := updated.CreatedAt
+		updated.Name = image.Name
+
+		if len(fieldpaths) > 0 {
+			for _, path := range fieldpaths {
+				if strings.HasPrefix(path, "labels.") {
+					if updated.Labels == nil {
+						updated.Labels = map[string]string{}
+					}
+
+					key := strings.TrimPrefix(path, "labels.")
+					updated.Labels[key] = image.Labels[key]
+					continue
+				} else if strings.HasPrefix(path, "annotations.") {
+					if updated.Target.Annotations == nil {
+						updated.Target.Annotations = map[string]string{}
+					}
+
+					key := strings.TrimPrefix(path, "annotations.")
+					updated.Target.Annotations[key] = image.Target.Annotations[key]
+					continue
+				}
+
+				switch path {
+				case "labels":
+					updated.Labels = image.Labels
+				case "target":
+					// NOTE(stevvooe): While we allow setting individual labels, we
+					// only support replacing the target as a unit, since that is
+					// commonly pulled as a unit from other sources. It often doesn't
+					// make sense to modify the size or digest without touching the
+					// mediatype, as well, for example.
+					updated.Target = image.Target
+				case "annotations":
+					updated.Target.Annotations = image.Target.Annotations
+				default:
+					return errors.Wrapf(errdefs.ErrInvalidArgument, "cannot update %q field on image %q", path, image.Name)
+				}
+			}
+		} else {
+			updated = image
+		}
+
+		if err := validateImage(&updated); err != nil {
+			return err
+		}
+
+		updated.CreatedAt = createdat
+		updated.UpdatedAt = time.Now().UTC()
+		return writeImage(ibkt, &updated)
+	}); err != nil {
+		return images.Image{}, err
+	}
+
+	return updated, nil
+
+}
+```
+
+- imageStore.Delete
+```
+func (s *imageStore) Delete(ctx context.Context, name string, opts ...images.DeleteOpt) error {
+	namespace, err := namespaces.NamespaceRequired(ctx)
+	if err != nil {
+		return err
+	}
+
+	return update(ctx, s.db, func(tx *bolt.Tx) error {
+		bkt := getImagesBucket(tx, namespace)
+		if bkt == nil {
+			return errors.Wrapf(errdefs.ErrNotFound, "image %q", name)
+		}
+
+		if err = bkt.DeleteBucket([]byte(name)); err != nil {
+			if err == bolt.ErrBucketNotFound {
+				err = errors.Wrapf(errdefs.ErrNotFound, "image %q", name)
+			}
+			return err
+		}
+
+		atomic.AddUint32(&s.db.dirty, 1)
+
+		return nil
+	})
+}
+```
+
 ### 外部Service接口的实现
 ```
 type service struct {
