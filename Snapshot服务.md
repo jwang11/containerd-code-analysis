@@ -149,9 +149,21 @@ func init() {
 
 ### 外部服务接口的实现
 - 外部Service
-```
+```diff
 type service struct {
 	ss map[string]snapshots.Snapshotter
+}
++ //获取Snapshot的底层实现，如overlay
+func (s *service) getSnapshotter(name string) (snapshots.Snapshotter, error) {
+	if name == "" {
+		return nil, errdefs.ToGRPCf(errdefs.ErrInvalidArgument, "snapshotter argument missing")
+	}
+
+	sn := s.ss[name]
+	if sn == nil {
+		return nil, errdefs.ToGRPCf(errdefs.ErrInvalidArgument, "snapshotter not loaded: %s", name)
+	}
+	return sn, nil
 }
 ```
 - 需实现的外部接口
