@@ -2,6 +2,7 @@
 > Image服务提供镜像的pull，push等操作
 
 ### 外部服务GPRCPlugin的注册
+- 依赖ServicePlugin中的services.ImagesService
 [services/images/service.go](https://github.com/containerd/containerd/blob/main/services/images/service.go)
 ```
 func init() {
@@ -60,6 +61,8 @@ func init() {
 	})
 }
 
+### 内部服务ServicePlugin的实现
+```
 type local struct {
 	store     images.Store
 	gc        gcScheduler
