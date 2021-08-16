@@ -85,7 +85,7 @@ func LoadPlugins(ctx context.Context, config *srvconfig.Config) ([]*plugin.Regis
 				dbopts = append(dbopts, metadata.WithPolicyIsolated)
 			}
 +			mdb := metadata.NewDB(db, cs.(content.Store), snapshotters, dbopts...)
-			if err := mdb.Init(ic.Context); err != nil {
++			if err := mdb.Init(ic.Context); err != nil {
 				return nil, err
 			}
 			return mdb, nil
@@ -802,5 +802,95 @@ func (cs *contentStore) ReaderAt(ctx context.Context, desc ocispec.Descriptor) (
 		return nil, err
 	}
 +	return cs.Store.ReaderAt(ctx, desc)
+}
+```
+
+### Meta DB的初始化
+- Init函数在bolt库里初始化了版本信息
+```diff
+// Init ensures the database is at the correct version
+// and performs any needed migrations.
+func (m *DB) Init(ctx context.Context) error {
+	// errSkip is used when no migration or version needs to be written
+	// to the database and the transaction can be immediately rolled
+	// back rather than performing a much slower and unnecessary commit.
+	var errSkip = errors.New("skip update")
+
+	err := m.db.Update(func(tx *bolt.Tx) error {
+		var (
+			// current schema and version
+			schema  = "v0"
+			version = 0
+		)
+
+...
+
++		bkt, err := tx.CreateBucketIfNotExists(bucketKeyVersion)
+		if err != nil {
+			return err
+		}
+
++		versionEncoded, err := encodeInt(dbVersion)
+		if err != nil {
+			return err
+		}
+
++		return bkt.Put(bucketKeyDBVersion, versionEncoded)
+	})
+	if err == errSkip {
+		err = nil
+	}
+	return err
+}
+```
+
+- Meta DB上定义的一些操作，以后会被各种Service用到
+```
+// ContentStore returns a namespaced content store
+// proxied to a content store.
+func (m *DB) ContentStore() content.Store {
+	if m.cs == nil {
+		return nil
+	}
+	return m.cs
+}
+
+// Snapshotter returns a namespaced content store for
+// the requested snapshotter name proxied to a snapshotter.
+func (m *DB) Snapshotter(name string) snapshots.Snapshotter {
+	sn, ok := m.ss[name]
+	if !ok {
+		return nil
+	}
+	return sn
+}
+
+// Snapshotters returns all available snapshotters.
+func (m *DB) Snapshotters() map[string]snapshots.Snapshotter {
+	ss := make(map[string]snapshots.Snapshotter, len(m.ss))
+	for n, sn := range m.ss {
+		ss[n] = sn
+	}
+	return ss
+}
+
+// View runs a readonly transaction on the metadata store.
+func (m *DB) View(fn func(*bolt.Tx) error) error {
+	return m.db.View(fn)
+}
+
+// Update runs a writable transaction on the metadata store.
+func (m *DB) Update(fn func(*bolt.Tx) error) error {
+	m.wlock.RLock()
+	defer m.wlock.RUnlock()
+	err := m.db.Update(fn)
+	if err == nil {
+		dirty := atomic.LoadUint32(&m.dirty) > 0
+		for _, fn := range m.mutationCallbacks {
+			fn(dirty)
+		}
+	}
+
+	return err
 }
 ```
