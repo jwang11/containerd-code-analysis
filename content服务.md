@@ -194,6 +194,7 @@ type service struct {
 }
 ```
 - content server的service需要实现的interface
+```
 // ContentServer is the server API for Content service.
 type ContentServer interface {
 	// Info returns information about a committed object.
@@ -253,12 +254,15 @@ type ContentServer interface {
 ```
 
 ### Content Service的实现
+- register
 ```
 func (s *service) Register(server *grpc.Server) error {
 	api.RegisterContentServer(server, s)
 	return nil
 }
-
+```
+- Info
+```
 func (s *service) Info(ctx context.Context, req *api.InfoRequest) (*api.InfoResponse, error) {
 	if err := req.Digest.Validate(); err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "%q failed validation", req.Digest)
@@ -272,5 +276,130 @@ func (s *service) Info(ctx context.Context, req *api.InfoRequest) (*api.InfoResp
 	return &api.InfoResponse{
 		Info: infoToGRPC(bi),
 	}, nil
+}
+```
+- Update
+```
+func (s *service) Update(ctx context.Context, req *api.UpdateRequest) (*api.UpdateResponse, error) {
+	if err := req.Info.Digest.Validate(); err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "%q failed validation", req.Info.Digest)
+	}
+
+	info, err := s.store.Update(ctx, infoFromGRPC(req.Info), req.UpdateMask.GetPaths()...)
+	if err != nil {
+		return nil, errdefs.ToGRPC(err)
+	}
+
+	return &api.UpdateResponse{
+		Info: infoToGRPC(info),
+	}, nil
+}
+```
+- List
+```
+func (s *service) List(req *api.ListContentRequest, session api.Content_ListServer) error {
+	var (
+		buffer    []api.Info
+		sendBlock = func(block []api.Info) error {
+			// send last block
+			return session.Send(&api.ListContentResponse{
+				Info: block,
+			})
+		}
+	)
+
+	if err := s.store.Walk(session.Context(), func(info content.Info) error {
+		buffer = append(buffer, api.Info{
+			Digest:    info.Digest,
+			Size_:     info.Size,
+			CreatedAt: info.CreatedAt,
+			Labels:    info.Labels,
+		})
+
+		if len(buffer) >= 100 {
+			if err := sendBlock(buffer); err != nil {
+				return err
+			}
+
+			buffer = buffer[:0]
+		}
+
+		return nil
+	}, req.Filters...); err != nil {
+		return errdefs.ToGRPC(err)
+	}
+
+	if len(buffer) > 0 {
+		// send last block
+		if err := sendBlock(buffer); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+```
+- Delete
+```
+func (s *service) Delete(ctx context.Context, req *api.DeleteContentRequest) (*ptypes.Empty, error) {
+	log.G(ctx).WithField("digest", req.Digest).Debugf("delete content")
+	if err := req.Digest.Validate(); err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, err.Error())
+	}
+
+	if err := s.store.Delete(ctx, req.Digest); err != nil {
+		return nil, errdefs.ToGRPC(err)
+	}
+
+	return &ptypes.Empty{}, nil
+}
+```
+
+- Read
+```
+func (s *service) Read(req *api.ReadContentRequest, session api.Content_ReadServer) error {
+	if err := req.Digest.Validate(); err != nil {
+		return status.Errorf(codes.InvalidArgument, "%v: %v", req.Digest, err)
+	}
+
+	oi, err := s.store.Info(session.Context(), req.Digest)
+	if err != nil {
+		return errdefs.ToGRPC(err)
+	}
+
+	ra, err := s.store.ReaderAt(session.Context(), ocispec.Descriptor{Digest: req.Digest})
+	if err != nil {
+		return errdefs.ToGRPC(err)
+	}
+	defer ra.Close()
+
+	var (
+		offset = req.Offset
+		// size is read size, not the expected size of the blob (oi.Size), which the caller might not be aware of.
+		// offset+size can be larger than oi.Size.
+		size = req.Size_
+
+		// TODO(stevvooe): Using the global buffer pool. At 32KB, it is probably
+		// little inefficient for work over a fast network. We can tune this later.
+		p = bufPool.Get().(*[]byte)
+	)
+	defer bufPool.Put(p)
+
+	if offset < 0 {
+		offset = 0
+	}
+
+	if offset > oi.Size {
+		return status.Errorf(codes.OutOfRange, "read past object length %v bytes", oi.Size)
+	}
+
+	if size <= 0 || offset+size > oi.Size {
+		size = oi.Size - offset
+	}
+
+	_, err = io.CopyBuffer(
+		&readResponseWriter{session: session},
+		io.NewSectionReader(ra, offset, size), *p)
+	return errdefs.ToGRPC(err)
 }
 ```
