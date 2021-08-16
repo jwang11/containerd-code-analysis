@@ -59,6 +59,119 @@ func init() {
 		},
 	})
 }
+
+type local struct {
+	store     images.Store
+	gc        gcScheduler
+	publisher events.Publisher
+}
+
+var _ imagesapi.ImagesClient = &local{}
+
+func (l *local) Get(ctx context.Context, req *imagesapi.GetImageRequest, _ ...grpc.CallOption) (*imagesapi.GetImageResponse, error) {
+	image, err := l.store.Get(ctx, req.Name)
+	if err != nil {
+		return nil, errdefs.ToGRPC(err)
+	}
+
+	imagepb := imageToProto(&image)
+	return &imagesapi.GetImageResponse{
+		Image: &imagepb,
+	}, nil
+}
+
+func (l *local) List(ctx context.Context, req *imagesapi.ListImagesRequest, _ ...grpc.CallOption) (*imagesapi.ListImagesResponse, error) {
+	images, err := l.store.List(ctx, req.Filters...)
+	if err != nil {
+		return nil, errdefs.ToGRPC(err)
+	}
+
+	return &imagesapi.ListImagesResponse{
+		Images: imagesToProto(images),
+	}, nil
+}
+
+func (l *local) Create(ctx context.Context, req *imagesapi.CreateImageRequest, _ ...grpc.CallOption) (*imagesapi.CreateImageResponse, error) {
+	log.G(ctx).WithField("name", req.Image.Name).WithField("target", req.Image.Target.Digest).Debugf("create image")
+	if req.Image.Name == "" {
+		return nil, status.Errorf(codes.InvalidArgument, "Image.Name required")
+	}
+
+	var (
+		image = imageFromProto(&req.Image)
+		resp  imagesapi.CreateImageResponse
+	)
+	created, err := l.store.Create(ctx, image)
+	if err != nil {
+		return nil, errdefs.ToGRPC(err)
+	}
+
+	resp.Image = imageToProto(&created)
+
+	if err := l.publisher.Publish(ctx, "/images/create", &eventstypes.ImageCreate{
+		Name:   resp.Image.Name,
+		Labels: resp.Image.Labels,
+	}); err != nil {
+		return nil, err
+	}
+
+	return &resp, nil
+
+}
+
+func (l *local) Update(ctx context.Context, req *imagesapi.UpdateImageRequest, _ ...grpc.CallOption) (*imagesapi.UpdateImageResponse, error) {
+	if req.Image.Name == "" {
+		return nil, status.Errorf(codes.InvalidArgument, "Image.Name required")
+	}
+
+	var (
+		image      = imageFromProto(&req.Image)
+		resp       imagesapi.UpdateImageResponse
+		fieldpaths []string
+	)
+
+	if req.UpdateMask != nil && len(req.UpdateMask.Paths) > 0 {
+		fieldpaths = append(fieldpaths, req.UpdateMask.Paths...)
+	}
+
+	updated, err := l.store.Update(ctx, image, fieldpaths...)
+	if err != nil {
+		return nil, errdefs.ToGRPC(err)
+	}
+
+	resp.Image = imageToProto(&updated)
+
+	if err := l.publisher.Publish(ctx, "/images/update", &eventstypes.ImageUpdate{
+		Name:   resp.Image.Name,
+		Labels: resp.Image.Labels,
+	}); err != nil {
+		return nil, err
+	}
+
+	return &resp, nil
+}
+
+func (l *local) Delete(ctx context.Context, req *imagesapi.DeleteImageRequest, _ ...grpc.CallOption) (*ptypes.Empty, error) {
+	log.G(ctx).WithField("name", req.Name).Debugf("delete image")
+
+	if err := l.store.Delete(ctx, req.Name); err != nil {
+		return nil, errdefs.ToGRPC(err)
+	}
+
+	if err := l.publisher.Publish(ctx, "/images/delete", &eventstypes.ImageDelete{
+		Name: req.Name,
+	}); err != nil {
+		return nil, err
+	}
+
+	if req.Sync {
+		if _, err := l.gc.ScheduleAndWait(ctx); err != nil {
+			return nil, err
+		}
+	}
+
+	return &ptypes.Empty{}, nil
+}
 ```
 
 ### 底层实现
