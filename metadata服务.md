@@ -95,8 +95,8 @@ func LoadPlugins(ctx context.Context, config *srvconfig.Config) ([]*plugin.Regis
 }
 ```
 
-### ContentPlugin注册
-- ContentPlugin注册后，除了被metadata需要，以后还会在Content的SevicePlugin里被用到
+### ContentPlugin注册Local content store
+- Local content store除了被metadata需要，以后还会在Content的SevicePlugin里被用到
 (https://github.com/containerd/containerd/blob/main/content/local/store.go)
 ```diff
 // NewStore returns a local content store
