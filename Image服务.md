@@ -60,6 +60,7 @@ func init() {
 		},
 	})
 }
+```
 
 ### 内部服务ServicePlugin的实现
 ```
@@ -177,7 +178,7 @@ func (l *local) Delete(ctx context.Context, req *imagesapi.DeleteImageRequest, _
 }
 ```
 
-### 底层实现
+### 底层Service实现
 ```
 // Image provides the model for how containerd views container images.
 type Image struct {
@@ -202,8 +203,9 @@ type Image struct {
 
 	CreatedAt, UpdatedAt time.Time
 }
+
 ```
-### 外部接口的实现
+### 外部Service接口的实现
 ```
 type service struct {
 	local imagesapi.ImagesClient
