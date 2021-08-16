@@ -140,6 +140,48 @@ func init() {
 	})
 }
 ```
+
+- Content Service的注册
+[services/content/store.go](https://github.com/containerd/containerd/blob/main/services/content/store.go)
+```diff
+func init() {
+	plugin.Register(&plugin.Registration{
+		Type: plugin.ServicePlugin,
+		ID:   services.ContentService,
+		Requires: []plugin.Type{
+			plugin.EventPlugin,
+			plugin.MetadataPlugin,
+		},
+		InitFn: func(ic *plugin.InitContext) (interface{}, error) {
+			m, err := ic.Get(plugin.MetadataPlugin)
+			if err != nil {
+				return nil, err
+			}
+			ep, err := ic.Get(plugin.EventPlugin)
+			if err != nil {
+				return nil, err
+			}
++			// 直接复用metadata.DB里的ContentStore
++			s, err := newContentStore(m.(*metadata.DB).ContentStore(), ep.(events.Publisher))
+			return s, err
+		},
+	})
+}
+
+func newContentStore(cs content.Store, publisher events.Publisher) (content.Store, error) {
+	return &store{
+		Store:     cs,
+		publisher: publisher,
+	}, nil
+}
+
+// store wraps content.Store with proper event published.
+type store struct {
+	content.Store
+	publisher events.Publisher
+}
+```
+
 - ***contentserver.New***创建content server
 ```
 // New returns the content GRPC server
@@ -150,7 +192,68 @@ func New(cs content.Store) api.ContentServer {
 type service struct {
 	store content.Store
 }
+```
+- content server的service需要实现的interface
+// ContentServer is the server API for Content service.
+type ContentServer interface {
+	// Info returns information about a committed object.
+	//
+	// This call can be used for getting the size of content and checking for
+	// existence.
+	Info(context.Context, *InfoRequest) (*InfoResponse, error)
+	// Update updates content metadata.
+	//
+	// This call can be used to manage the mutable content labels. The
+	// immutable metadata such as digest, size, and committed at cannot
+	// be updated.
+	Update(context.Context, *UpdateRequest) (*UpdateResponse, error)
+	// List streams the entire set of content as Info objects and closes the
+	// stream.
+	//
+	// Typically, this will yield a large response, chunked into messages.
+	// Clients should make provisions to ensure they can handle the entire data
+	// set.
+	List(*ListContentRequest, Content_ListServer) error
+	// Delete will delete the referenced object.
+	Delete(context.Context, *DeleteContentRequest) (*types.Empty, error)
+	// Read allows one to read an object based on the offset into the content.
+	//
+	// The requested data may be returned in one or more messages.
+	Read(*ReadContentRequest, Content_ReadServer) error
+	// Status returns the status for a single reference.
+	Status(context.Context, *StatusRequest) (*StatusResponse, error)
+	// ListStatuses returns the status of ongoing object ingestions, started via
+	// Write.
+	//
+	// Only those matching the regular expression will be provided in the
+	// response. If the provided regular expression is empty, all ingestions
+	// will be provided.
+	ListStatuses(context.Context, *ListStatusesRequest) (*ListStatusesResponse, error)
+	// Write begins or resumes writes to a resource identified by a unique ref.
+	// Only one active stream may exist at a time for each ref.
+	//
+	// Once a write stream has started, it may only write to a single ref, thus
+	// once a stream is started, the ref may be omitted on subsequent writes.
+	//
+	// For any write transaction represented by a ref, only a single write may
+	// be made to a given offset. If overlapping writes occur, it is an error.
+	// Writes should be sequential and implementations may throw an error if
+	// this is required.
+	//
+	// If expected_digest is set and already part of the content store, the
+	// write will fail.
+	//
+	// When completed, the commit flag should be set to true. If expected size
+	// or digest is set, the content will be validated against those values.
+	Write(Content_WriteServer) error
+	// Abort cancels the ongoing write named in the request. Any resources
+	// associated with the write will be collected.
+	Abort(context.Context, *AbortRequest) (*types.Empty, error)
+}
+```
 
+### Content Service的实现
+```
 func (s *service) Register(server *grpc.Server) error {
 	api.RegisterContentServer(server, s)
 	return nil
@@ -169,45 +272,5 @@ func (s *service) Info(ctx context.Context, req *api.InfoRequest) (*api.InfoResp
 	return &api.InfoResponse{
 		Info: infoToGRPC(bi),
 	}, nil
-}
-```
-- Content Service的注册
-[services/content/store.go](https://github.com/containerd/containerd/blob/main/services/content/store.go)
-```
-func init() {
-	plugin.Register(&plugin.Registration{
-		Type: plugin.ServicePlugin,
-		ID:   services.ContentService,
-		Requires: []plugin.Type{
-			plugin.EventPlugin,
-			plugin.MetadataPlugin,
-		},
-		InitFn: func(ic *plugin.InitContext) (interface{}, error) {
-			m, err := ic.Get(plugin.MetadataPlugin)
-			if err != nil {
-				return nil, err
-			}
-			ep, err := ic.Get(plugin.EventPlugin)
-			if err != nil {
-				return nil, err
-			}
-
-			s, err := newContentStore(m.(*metadata.DB).ContentStore(), ep.(events.Publisher))
-			return s, err
-		},
-	})
-}
-
-func newContentStore(cs content.Store, publisher events.Publisher) (content.Store, error) {
-	return &store{
-		Store:     cs,
-		publisher: publisher,
-	}, nil
-}
-
-// store wraps content.Store with proper event published.
-type store struct {
-	content.Store
-	publisher events.Publisher
 }
 ```
