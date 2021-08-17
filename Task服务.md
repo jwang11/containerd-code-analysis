@@ -98,6 +98,114 @@ func initFunc(ic *plugin.InitContext) (interface{}, error) {
 	return l, nil
 }
 ```
+### Task外部服务接口实现
+- Task外部服务接口
+```
+// TasksServer is the server API for Tasks service.
+type TasksServer interface {
+	// Create a task.
+	Create(context.Context, *CreateTaskRequest) (*CreateTaskResponse, error)
+	// Start a process.
+	Start(context.Context, *StartRequest) (*StartResponse, error)
+	// Delete a task and on disk state.
+	Delete(context.Context, *DeleteTaskRequest) (*DeleteResponse, error)
+	DeleteProcess(context.Context, *DeleteProcessRequest) (*DeleteResponse, error)
+	Get(context.Context, *GetRequest) (*GetResponse, error)
+	List(context.Context, *ListTasksRequest) (*ListTasksResponse, error)
+	// Kill a task or process.
+	Kill(context.Context, *KillRequest) (*types1.Empty, error)
+	Exec(context.Context, *ExecProcessRequest) (*types1.Empty, error)
+	ResizePty(context.Context, *ResizePtyRequest) (*types1.Empty, error)
+	CloseIO(context.Context, *CloseIORequest) (*types1.Empty, error)
+	Pause(context.Context, *PauseTaskRequest) (*types1.Empty, error)
+	Resume(context.Context, *ResumeTaskRequest) (*types1.Empty, error)
+	ListPids(context.Context, *ListPidsRequest) (*ListPidsResponse, error)
+	Checkpoint(context.Context, *CheckpointTaskRequest) (*CheckpointTaskResponse, error)
+	Update(context.Context, *UpdateTaskRequest) (*types1.Empty, error)
+	Metrics(context.Context, *MetricsRequest) (*MetricsResponse, error)
+	Wait(context.Context, *WaitRequest) (*WaitResponse, error)
+}
+```
+
+- 接口实现
+```
+type service struct {
+	local api.TasksClient
+}
+
+func (s *service) Register(server *grpc.Server) error {
+	api.RegisterTasksServer(server, s)
+	return nil
+}
+
+func (s *service) Create(ctx context.Context, r *api.CreateTaskRequest) (*api.CreateTaskResponse, error) {
+	return s.local.Create(ctx, r)
+}
+
+func (s *service) Start(ctx context.Context, r *api.StartRequest) (*api.StartResponse, error) {
+	return s.local.Start(ctx, r)
+}
+
+func (s *service) Delete(ctx context.Context, r *api.DeleteTaskRequest) (*api.DeleteResponse, error) {
+	return s.local.Delete(ctx, r)
+}
+
+func (s *service) DeleteProcess(ctx context.Context, r *api.DeleteProcessRequest) (*api.DeleteResponse, error) {
+	return s.local.DeleteProcess(ctx, r)
+}
+
+func (s *service) Get(ctx context.Context, r *api.GetRequest) (*api.GetResponse, error) {
+	return s.local.Get(ctx, r)
+}
+
+func (s *service) List(ctx context.Context, r *api.ListTasksRequest) (*api.ListTasksResponse, error) {
+	return s.local.List(ctx, r)
+}
+
+func (s *service) Pause(ctx context.Context, r *api.PauseTaskRequest) (*ptypes.Empty, error) {
+	return s.local.Pause(ctx, r)
+}
+
+func (s *service) Resume(ctx context.Context, r *api.ResumeTaskRequest) (*ptypes.Empty, error) {
+	return s.local.Resume(ctx, r)
+}
+
+func (s *service) Kill(ctx context.Context, r *api.KillRequest) (*ptypes.Empty, error) {
+	return s.local.Kill(ctx, r)
+}
+
+func (s *service) ListPids(ctx context.Context, r *api.ListPidsRequest) (*api.ListPidsResponse, error) {
+	return s.local.ListPids(ctx, r)
+}
+
+func (s *service) Exec(ctx context.Context, r *api.ExecProcessRequest) (*ptypes.Empty, error) {
+	return s.local.Exec(ctx, r)
+}
+
+func (s *service) ResizePty(ctx context.Context, r *api.ResizePtyRequest) (*ptypes.Empty, error) {
+	return s.local.ResizePty(ctx, r)
+}
+
+func (s *service) CloseIO(ctx context.Context, r *api.CloseIORequest) (*ptypes.Empty, error) {
+	return s.local.CloseIO(ctx, r)
+}
+
+func (s *service) Checkpoint(ctx context.Context, r *api.CheckpointTaskRequest) (*api.CheckpointTaskResponse, error) {
+	return s.local.Checkpoint(ctx, r)
+}
+
+func (s *service) Update(ctx context.Context, r *api.UpdateTaskRequest) (*ptypes.Empty, error) {
+	return s.local.Update(ctx, r)
+}
+
+func (s *service) Metrics(ctx context.Context, r *api.MetricsRequest) (*api.MetricsResponse, error) {
+	return s.local.Metrics(ctx, r)
+}
+
+func (s *service) Wait(ctx context.Context, r *api.WaitRequest) (*api.WaitResponse, error) {
+	return s.local.Wait(ctx, r)
+}
+```
 
 ### Task内部服务接口实现
 - Task内部服务的结构
