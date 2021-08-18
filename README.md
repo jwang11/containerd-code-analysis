@@ -3,12 +3,12 @@ Analyze source code structure of [containerd project](https://github.com/contain
 
 - Containerd初始化
 - Plugin机制
-- Content插件
-- Snapshot插件
-- Metadata插件
-- Diff插件
-- container插件
-- Runtime
-- Task插件
+- Content服务
+- Snapshot服务
+- Metadata服务
+- Diff服务
+- container服务
+- Runtime服务
+- Task服务
 - 代码路径ctr_run_image
 - 代码路径ctr_pull_image 
