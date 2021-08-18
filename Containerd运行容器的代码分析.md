@@ -220,7 +220,7 @@ var Command = cli.Command{
 }
 ```
 - ***newContainer***是创建一个container，它分成两部分，前面部分是Linux specific，后面是client.newContainer是通用
-
+```diff
 // NewContainer creates a new container
 func NewContainer(ctx gocontext.Context, client *containerd.Client, context *cli.Context) (containerd.Container, error) {
 	var (
@@ -244,6 +244,7 @@ func NewContainer(ctx gocontext.Context, client *containerd.Client, context *cli
 		opts = append(opts, oci.WithSpecFromFile(context.String("config")))
 	} else {
 		var (
++			// image名字
 			ref = context.Args().First()
 			//for container's id is Args[1]
 			args = context.Args()[2:]
@@ -451,6 +452,7 @@ func NewContainer(ctx gocontext.Context, client *containerd.Client, context *cli
 	// the /etc/{passwd,group} files. So cOpts needs to have precedence over opts.
 +	return client.NewContainer(ctx, id, cOpts...)
 }
+```
 
 ```diff 
 // NewContainer will create a new container in container with the provided id
@@ -461,7 +463,7 @@ func (c *Client) NewContainer(ctx context.Context, id string, opts ...NewContain
 		return nil, err
 	}
 	defer done(ctx)
-+   // 来自api/services/containers/v1/containers.pb.go(工具生成）
++	// api/services/containers/v1/containers.pb.go(工具生成）
 	container := containers.Container{
 		ID: id,
 		Runtime: containers.RuntimeInfo{
@@ -473,7 +475,7 @@ func (c *Client) NewContainer(ctx context.Context, id string, opts ...NewContain
 			return nil, err
 		}
 	}
-+   // 调用Container外部服务的Create方法    
++	// 调用Container外部服务的Create方法    
 +	r, err := c.ContainerService().Create(ctx, container)
 	if err != nil {
 		return nil, err
