@@ -1,7 +1,8 @@
 # Task服务
 > Task服务负责执行Container里的任务
 
-### Task外部服务GPRC Plugin注册
+### Task外部服务注册和初始化
+- 外部服务通过GPRC Plugin注册，ID是“tasks”，类型“plugin.GRPCPlugin”
 ```
 func init() {
 	plugin.Register(&plugin.Registration{
@@ -28,17 +29,34 @@ func init() {
 	})
 }
 ```
-### Task内部服务DevicePlugin注册
+
+- 初始化函数InitFn依赖内部服务plugin.ServicePlugin[services.TaskService]，InitFn执行完后返回service结构
 ```
+type service struct {
+	local api.TasksClient
+}
+```
+
+### Task内部服务注册和初始化
+- 内部服务Service.Plugin的注册
+```diff
 func init() {
 	plugin.Register(&plugin.Registration{
 		Type:     plugin.ServicePlugin,
 		ID:       services.TasksService,
-		Requires: tasksServiceRequires,
++		Requires: tasksServiceRequires,
 		InitFn:   initFunc,
 	})
 
 	timeout.Set(stateTimeout, 2*time.Second)
+}
+
+var tasksServiceRequires = []plugin.Type{
+	plugin.EventPlugin,
+	plugin.RuntimePlugin,
+	plugin.RuntimePluginV2,
+	plugin.MetadataPlugin,
+	plugin.TaskMonitorPlugin,
 }
 
 func initFunc(ic *plugin.InitContext) (interface{}, error) {
@@ -98,6 +116,19 @@ func initFunc(ic *plugin.InitContext) (interface{}, error) {
 	return l, nil
 }
 ```
+- 初始化函数InitFn依赖(Linux下），plugin.EventPlugin, plugin.RuntimePlugin, plugin.RuntimePluginV2, plugin.MetadataPlugin, plugin.TaskMonitorPlugin,
+- InitFn返回local结构
+```
+type local struct {
+	runtimes   map[string]runtime.PlatformRuntime
+	containers containers.Store
+	store      content.Store
+	publisher  events.Publisher
+
+	monitor   runtime.TaskMonitor
+	v2Runtime *v2.TaskManager
+}
+```
 ### Task外部服务接口实现
 - Task外部服务接口
 ```
@@ -129,10 +160,6 @@ type TasksServer interface {
 
 - 接口实现
 ```
-type service struct {
-	local api.TasksClient
-}
-
 func (s *service) Register(server *grpc.Server) error {
 	api.RegisterTasksServer(server, s)
 	return nil
@@ -208,16 +235,30 @@ func (s *service) Wait(ctx context.Context, r *api.WaitRequest) (*api.WaitRespon
 ```
 
 ### Task内部服务接口实现
-- Task内部服务的结构
+- Task内部服务的接口
 ```
-type local struct {
-	runtimes   map[string]runtime.PlatformRuntime
-	containers containers.Store
-	store      content.Store
-	publisher  events.Publisher
-
-	monitor   runtime.TaskMonitor
-	v2Runtime *v2.TaskManager
+type TasksClient interface {
+	// Create a task.
+	Create(ctx context.Context, in *CreateTaskRequest, opts ...grpc.CallOption) (*CreateTaskResponse, error)
+	// Start a process.
+	Start(ctx context.Context, in *StartRequest, opts ...grpc.CallOption) (*StartResponse, error)
+	// Delete a task and on disk state.
+	Delete(ctx context.Context, in *DeleteTaskRequest, opts ...grpc.CallOption) (*DeleteResponse, error)
+	DeleteProcess(ctx context.Context, in *DeleteProcessRequest, opts ...grpc.CallOption) (*DeleteResponse, error)
+	Get(ctx context.Context, in *GetRequest, opts ...grpc.CallOption) (*GetResponse, error)
+	List(ctx context.Context, in *ListTasksRequest, opts ...grpc.CallOption) (*ListTasksResponse, error)
+	// Kill a task or process.
+	Kill(ctx context.Context, in *KillRequest, opts ...grpc.CallOption) (*types1.Empty, error)
+	Exec(ctx context.Context, in *ExecProcessRequest, opts ...grpc.CallOption) (*types1.Empty, error)
+	ResizePty(ctx context.Context, in *ResizePtyRequest, opts ...grpc.CallOption) (*types1.Empty, error)
+	CloseIO(ctx context.Context, in *CloseIORequest, opts ...grpc.CallOption) (*types1.Empty, error)
+	Pause(ctx context.Context, in *PauseTaskRequest, opts ...grpc.CallOption) (*types1.Empty, error)
+	Resume(ctx context.Context, in *ResumeTaskRequest, opts ...grpc.CallOption) (*types1.Empty, error)
+	ListPids(ctx context.Context, in *ListPidsRequest, opts ...grpc.CallOption) (*ListPidsResponse, error)
+	Checkpoint(ctx context.Context, in *CheckpointTaskRequest, opts ...grpc.CallOption) (*CheckpointTaskResponse, error)
+	Update(ctx context.Context, in *UpdateTaskRequest, opts ...grpc.CallOption) (*types1.Empty, error)
+	Metrics(ctx context.Context, in *MetricsRequest, opts ...grpc.CallOption) (*MetricsResponse, error)
+	Wait(ctx context.Context, in *WaitRequest, opts ...grpc.CallOption) (*WaitResponse, error)
 }
 ```
 
