@@ -1,5 +1,5 @@
 # Task服务
-> Task服务负责执行Container里的任务
+> Task代表执行中的Container对象，而Task服务管理这些对象。// Task is the runtime object for an executing container
 
 ### Task外部服务注册和初始化
 - 外部服务通过GPRC Plugin注册，ID是“tasks”，类型“plugin.GRPCPlugin”
