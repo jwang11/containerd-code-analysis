@@ -444,7 +444,8 @@ func NewContainer(ctx gocontext.Context, client *containerd.Client, context *cli
 
 	opts = append(opts, oci.WithAnnotations(commands.LabelArgs(context.StringSlice("label"))))
 	var s specs.Spec
-	spec = containerd.WithSpec(&s, opts...)
++	// 运行所有opts里定义的update spec操作，然后给container设置spec	
++	spec = containerd.WithSpec(&s, opts...)
 
 	cOpts = append(cOpts, spec)
 
@@ -489,6 +490,151 @@ type RuntimeInfo struct {
 	Name    string
 	Options *types.Any
 }
+```
+
+- newTask创建run container的任务
+```diff
+func NewTask(ctx gocontext.Context, client *containerd.Client, container containerd.Container, checkpoint string, con console.Console, nullIO bool, logURI string, ioOpts []cio.Opt, opts ...containerd.NewTaskOpts) (containerd.Task, error) {
+	stdinC := &stdinCloser{
+		stdin: os.Stdin,
+	}
+	if checkpoint != "" {
+		im, err := client.GetImage(ctx, checkpoint)
+		if err != nil {
+			return nil, err
+		}
+		opts = append(opts, containerd.WithTaskCheckpoint(im))
+	}
+	var ioCreator cio.Creator
+	if con != nil {
+		if nullIO {
+			return nil, errors.New("tty and null-io cannot be used together")
+		}
+		ioCreator = cio.NewCreator(append([]cio.Opt{cio.WithStreams(con, con, nil), cio.WithTerminal}, ioOpts...)...)
+	} else if nullIO {
+		ioCreator = cio.NullIO
+	} else if logURI != "" {
+		u, err := url.Parse(logURI)
+		if err != nil {
+			return nil, err
+		}
+		ioCreator = cio.LogURI(u)
+	} else {
+		ioCreator = cio.NewCreator(append([]cio.Opt{cio.WithStreams(stdinC, os.Stdout, os.Stderr)}, ioOpts...)...)
+	}
++	t, err := container.NewTask(ctx, ioCreator, opts...)
+	if err != nil {
+		return nil, err
+	}
+	stdinC.closer = func() {
+		t.CloseIO(ctx, containerd.WithStdinCloser)
+	}
+	return t, nil
+}
+```
+
+- container.NewTask
+```
+
+func (c *container) NewTask(ctx context.Context, ioCreate cio.Creator, opts ...NewTaskOpts) (_ Task, err error) {
+	i, err := ioCreate(c.id)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if err != nil && i != nil {
+			i.Cancel()
+			i.Close()
+		}
+	}()
+	cfg := i.Config()
+	request := &tasks.CreateTaskRequest{
+		ContainerID: c.id,
+		Terminal:    cfg.Terminal,
+		Stdin:       cfg.Stdin,
+		Stdout:      cfg.Stdout,
+		Stderr:      cfg.Stderr,
+	}
+	r, err := c.get(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if r.SnapshotKey != "" {
+		if r.Snapshotter == "" {
+			return nil, errors.Wrapf(errdefs.ErrInvalidArgument, "unable to resolve rootfs mounts without snapshotter on container")
+		}
+
+		// get the rootfs from the snapshotter and add it to the request
+		s, err := c.client.getSnapshotter(ctx, r.Snapshotter)
+		if err != nil {
+			return nil, err
+		}
+		mounts, err := s.Mounts(ctx, r.SnapshotKey)
+		if err != nil {
+			return nil, err
+		}
+		spec, err := c.Spec(ctx)
+		if err != nil {
+			return nil, err
+		}
+		for _, m := range mounts {
+			if spec.Linux != nil && spec.Linux.MountLabel != "" {
+				context := label.FormatMountLabel("", spec.Linux.MountLabel)
+				if context != "" {
+					m.Options = append(m.Options, context)
+				}
+			}
+			request.Rootfs = append(request.Rootfs, &types.Mount{
+				Type:    m.Type,
+				Source:  m.Source,
+				Options: m.Options,
+			})
+		}
+	}
+	info := TaskInfo{
+		runtime: r.Runtime.Name,
+	}
+	for _, o := range opts {
+		if err := o(ctx, c.client, &info); err != nil {
+			return nil, err
+		}
+	}
+	if info.RootFS != nil {
+		for _, m := range info.RootFS {
+			request.Rootfs = append(request.Rootfs, &types.Mount{
+				Type:    m.Type,
+				Source:  m.Source,
+				Options: m.Options,
+			})
+		}
+	}
+	if info.Options != nil {
+		any, err := typeurl.MarshalAny(info.Options)
+		if err != nil {
+			return nil, err
+		}
+		request.Options = any
+	}
+	t := &task{
+		client: c.client,
+		io:     i,
+		id:     c.id,
+		c:      c,
+	}
+	if info.Checkpoint != nil {
+		request.Checkpoint = info.Checkpoint
+	}
++	response, err := c.client.TaskService().Create(ctx, request)
+	if err != nil {
+		return nil, errdefs.FromGRPC(err)
+	}
+	t.pid = response.Pid
+	return t, nil
+}
+```
+
+- task.start
+```
 ```
 
 ### Service端
