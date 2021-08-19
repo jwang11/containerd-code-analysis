@@ -535,6 +535,14 @@ func NewTask(ctx gocontext.Context, client *containerd.Client, container contain
 
 - container.NewTask
 ```
+type task struct {
+	client *Client
+	c      Container
+
+	io  cio.IO
+	id  string
+	pid uint32
+}
 
 func (c *container) NewTask(ctx context.Context, ioCreate cio.Creator, opts ...NewTaskOpts) (_ Task, err error) {
 	i, err := ioCreate(c.id)
@@ -635,9 +643,106 @@ func (c *container) NewTask(ctx context.Context, ioCreate cio.Creator, opts ...N
 
 - task.start
 ```
+func (t *task) Start(ctx context.Context) error {
+	r, err := t.client.TaskService().Start(ctx, &tasks.StartRequest{
+		ContainerID: t.id,
+	})
+	if err != nil {
+		if t.io != nil {
+			t.io.Cancel()
+			t.io.Close()
+		}
+		return errdefs.FromGRPC(err)
+	}
+	t.pid = r.Pid
+	return nil
+}
 ```
 
 ### Service端
-- ***newContainer***
+- ***TaskService.Start***。从外部service的Start -> 内部service的Start
+
+```
+func (s *service) Start(ctx context.Context, r *api.StartRequest) (*api.StartResponse, error) {
+	return s.local.Start(ctx, r)
+}
+```
+```
+func (l *local) Start(ctx context.Context, r *api.StartRequest, _ ...grpc.CallOption) (*api.StartResponse, error) {
+	t, err := l.getTask(ctx, r.ContainerID)
+	if err != nil {
+		return nil, err
+	}
+	p := runtime.Process(t)
+	if r.ExecID != "" {
+		if p, err = t.Process(ctx, r.ExecID); err != nil {
+			return nil, errdefs.ToGRPC(err)
+		}
+	}
+	if err := p.Start(ctx); err != nil {
+		return nil, errdefs.ToGRPC(err)
+	}
+	state, err := p.State(ctx)
+	if err != nil {
+		return nil, errdefs.ToGRPC(err)
+	}
+	return &api.StartResponse{
+		Pid: state.Pid,
+	}, nil
+}
+
+func (l *local) getTask(ctx context.Context, id string) (runtime.Task, error) {
+	container, err := l.getContainer(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	return l.getTaskFromContainer(ctx, container)
+}
+
+func (l *local) getContainer(ctx context.Context, id string) (*containers.Container, error) {
+	var container containers.Container
+	container, err := l.containers.Get(ctx, id)
+	if err != nil {
+		return nil, errdefs.ToGRPC(err)
+	}
+	return &container, nil
+}
+
+func (l *local) getTaskFromContainer(ctx context.Context, container *containers.Container) (runtime.Task, error) {
+	runtime, err := l.getRuntime(container.Runtime.Name)
+	if err != nil {
+		return nil, errdefs.ToGRPCf(err, "runtime for task %s", container.Runtime.Name)
+	}
+	t, err := runtime.Get(ctx, container.ID)
+	if err != nil {
+		return nil, status.Errorf(codes.NotFound, "task %v not found", container.ID)
+	}
+	return t, nil
+}
+
+func (l *local) getRuntime(name string) (runtime.PlatformRuntime, error) {
+	runtime, ok := l.runtimes[name]
+	if !ok {
+		// one runtime to rule them all
+		return l.v2Runtime, nil
+	}
+	return runtime, nil
+}
+
+// Start the process
+func (p *process) Start(ctx context.Context) error {
+	_, err := p.shim.task.Start(ctx, &task.StartRequest{
+		ID:     p.shim.ID(),
+		ExecID: p.id,
+	})
+	if err != nil {
+		return errdefs.FromGRPC(err)
+	}
+	return nil
+}
+
+```
+
+- runtime.Process
 ```
 ```
