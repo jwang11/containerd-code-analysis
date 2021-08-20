@@ -778,7 +778,7 @@ func (m *TaskManager) Create(ctx context.Context, id string, opts runtime.Create
 		return nil, errors.Wrap(err, "failed to create shim")
 	}
 
-	if err := m.tasks.Add(ctx, t); err != nil {
++	if err := m.tasks.Add(ctx, t); err != nil {
 		return nil, errors.Wrap(err, "failed to add task")
 	}
 
@@ -860,8 +860,8 @@ func (m *TaskManager) startShim(ctx context.Context, bundle *Bundle, id string, 
 		topts = opts.RuntimeOptions
 	}
 +	// containerd-shim-runc-shim --ns xxx --address xxx --bundle xxxx --id xxxx
-	b := shimBinary(bundle, opts.Runtime, m.containerdAddress, m.containerdTTRPCAddress)
-	shim, err := b.Start(ctx, topts, func() {
++	b := shimBinary(bundle, opts.Runtime, m.containerdAddress, m.containerdTTRPCAddress)
++	shim, err := b.Start(ctx, topts, func() {
 		log.G(ctx).WithField("id", id).Info("shim disconnected")
 
 		cleanupAfterDeadShim(context.Background(), id, ns, m.tasks, m.events, b)
@@ -879,7 +879,7 @@ func (m *TaskManager) startShim(ctx context.Context, bundle *Bundle, id string, 
 }
 ```
 - shimBinary实现
-```
+```diff
 func shimBinary(bundle *Bundle, runtime, containerdAddress string, containerdTTRPCAddress string) *binary {
 	return &binary{
 		bundle:                 bundle,
@@ -960,7 +960,8 @@ func (b *binary) Start(ctx context.Context, opts *types.Any, onClose func()) (_ 
 		cancelShimLog()
 		f.Close()
 	}
-	client := ttrpc.NewClient(conn, ttrpc.WithOnClose(onCloseWithShimLog))
++	// 创建client用来和v2 shim通信
++	client := ttrpc.NewClient(conn, ttrpc.WithOnClose(onCloseWithShimLog))
 	return &shim{
 		bundle: b.bundle,
 		client: client,
@@ -1003,11 +1004,57 @@ func (s *shim) Create(ctx context.Context, opts runtime.CreateOpts) (runtime.Tas
 }
 ```
 
+- s.task.Create
+```
+func (c *taskClient) Create(ctx context.Context, req *CreateTaskRequest) (*CreateTaskResponse, error) {
+	var resp CreateTaskResponse
+	if err := c.client.Call(ctx, "containerd.task.v2.Task", "Create", req, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+```
+
+- c.client.Call(ctx, "containerd.task.v2.Task", "Create", req, &resp)
+(https://github.com/containerd/containerd/blob/main/runtime/v2/runc/v2/service.go)
+```
+// Create a new initial process and container with the underlying OCI runtime
+func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *taskAPI.CreateTaskResponse, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	container, err := runc.NewContainer(ctx, s.platform, r)
+	if err != nil {
+		return nil, err
+	}
+
+	s.containers[r.ID] = container
+
+	s.send(&eventstypes.TaskCreate{
+		ContainerID: r.ID,
+		Bundle:      r.Bundle,
+		Rootfs:      r.Rootfs,
+		IO: &eventstypes.TaskIO{
+			Stdin:    r.Stdin,
+			Stdout:   r.Stdout,
+			Stderr:   r.Stderr,
+			Terminal: r.Terminal,
+		},
+		Checkpoint: r.Checkpoint,
+		Pid:        uint32(container.Pid()),
+	})
+
+	return &taskAPI.CreateTaskResponse{
+		Pid: uint32(container.Pid()),
+	}, nil
+}
+```
+
 - ***TaskService.Start***。从外部service的Start -> 内部service的Start
 ```diff
 func (l *local) Start(ctx context.Context, r *api.StartRequest, _ ...grpc.CallOption) (*api.StartResponse, error) {
 +	// 返回runtime.Task接口类型
-	t, err := l.getTask(ctx, r.ContainerID)
++	t, err := l.getTask(ctx, r.ContainerID)
 	if err != nil {
 		return nil, err
 	}
@@ -1022,7 +1069,7 @@ func (l *local) Start(ctx context.Context, r *api.StartRequest, _ ...grpc.CallOp
 +	if err := p.Start(ctx); err != nil {
 		return nil, errdefs.ToGRPC(err)
 	}
-	state, err := p.State(ctx)
++	state, err := p.State(ctx)
 	if err != nil {
 		return nil, errdefs.ToGRPC(err)
 	}
@@ -1030,52 +1077,49 @@ func (l *local) Start(ctx context.Context, r *api.StartRequest, _ ...grpc.CallOp
 		Pid: state.Pid,
 	}, nil
 }
-
-func (l *local) getTask(ctx context.Context, id string) (runtime.Task, error) {
-	container, err := l.getContainer(ctx, id)
-	if err != nil {
-		return nil, err
-	}
-	return l.getTaskFromContainer(ctx, container)
-}
-
-func (l *local) getContainer(ctx context.Context, id string) (*containers.Container, error) {
-	var container containers.Container
-	container, err := l.containers.Get(ctx, id)
-	if err != nil {
-		return nil, errdefs.ToGRPC(err)
-	}
-	return &container, nil
-}
-
-func (l *local) getTaskFromContainer(ctx context.Context, container *containers.Container) (runtime.Task, error) {
-	runtime, err := l.getRuntime(container.Runtime.Name)
-	if err != nil {
-		return nil, errdefs.ToGRPCf(err, "runtime for task %s", container.Runtime.Name)
-	}
-	t, err := runtime.Get(ctx, container.ID)
-	if err != nil {
-		return nil, status.Errorf(codes.NotFound, "task %v not found", container.ID)
-	}
-	return t, nil
-}
-
-func (l *local) getRuntime(name string) (runtime.PlatformRuntime, error) {
-	runtime, ok := l.runtimes[name]
-	if !ok {
-		// one runtime to rule them all
-		return l.v2Runtime, nil
-	}
-	return runtime, nil
-}
-```
-
-
-- runtime.Process
 ```
 ```
+		func (l *local) getTask(ctx context.Context, id string) (runtime.Task, error) {
+			container, err := l.getContainer(ctx, id)
+			if err != nil {
+				return nil, err
+			}
+			return l.getTaskFromContainer(ctx, container)
+		}
 
-- p.start https://github.com/containerd/containerd/blob/main/runtime/v2/process.go
+		func (l *local) getContainer(ctx context.Context, id string) (*containers.Container, error) {
+			var container containers.Container
+			container, err := l.containers.Get(ctx, id)
+			if err != nil {
+				return nil, errdefs.ToGRPC(err)
+			}
+			return &container, nil
+		}
+
+		func (l *local) getTaskFromContainer(ctx context.Context, container *containers.Container) (runtime.Task, error) {
+			runtime, err := l.getRuntime(container.Runtime.Name)
+			if err != nil {
+				return nil, errdefs.ToGRPCf(err, "runtime for task %s", container.Runtime.Name)
+			}
+			t, err := runtime.Get(ctx, container.ID)
+			if err != nil {
+				return nil, status.Errorf(codes.NotFound, "task %v not found", container.ID)
+			}
+			return t, nil
+		}
+
+		func (l *local) getRuntime(name string) (runtime.PlatformRuntime, error) {
+			runtime, ok := l.runtimes[name]
+			if !ok {
+				// one runtime to rule them all
+				return l.v2Runtime, nil
+			}
+			return runtime, nil
+		}
+```
+
+- p.start 
+(https://github.com/containerd/containerd/blob/main/runtime/v2/process.go)
 ```
 // Start the process
 func (p *process) Start(ctx context.Context) error {
@@ -1087,6 +1131,66 @@ func (p *process) Start(ctx context.Context) error {
 		return errdefs.FromGRPC(err)
 	}
 	return nil
+}
+```
+
+- p.shim.task.Start
+```
+// Start a process
+func (s *service) Start(ctx context.Context, r *taskAPI.StartRequest) (*taskAPI.StartResponse, error) {
+	container, err := s.getContainer(r.ID)
+	if err != nil {
+		return nil, err
+	}
+
+	// hold the send lock so that the start events are sent before any exit events in the error case
+	s.eventSendMu.Lock()
+	p, err := container.Start(ctx, r)
+	if err != nil {
+		s.eventSendMu.Unlock()
+		return nil, errdefs.ToGRPC(err)
+	}
+
+	switch r.ExecID {
+	case "":
+		switch cg := container.Cgroup().(type) {
+		case cgroups.Cgroup:
+			if err := s.ep.Add(container.ID, cg); err != nil {
+				logrus.WithError(err).Error("add cg to OOM monitor")
+			}
+		case *cgroupsv2.Manager:
+			allControllers, err := cg.RootControllers()
+			if err != nil {
+				logrus.WithError(err).Error("failed to get root controllers")
+			} else {
+				if err := cg.ToggleControllers(allControllers, cgroupsv2.Enable); err != nil {
+					if userns.RunningInUserNS() {
+						logrus.WithError(err).Debugf("failed to enable controllers (%v)", allControllers)
+					} else {
+						logrus.WithError(err).Errorf("failed to enable controllers (%v)", allControllers)
+					}
+				}
+			}
+			if err := s.ep.Add(container.ID, cg); err != nil {
+				logrus.WithError(err).Error("add cg to OOM monitor")
+			}
+		}
+
+		s.send(&eventstypes.TaskStart{
+			ContainerID: container.ID,
+			Pid:         uint32(p.Pid()),
+		})
+	default:
+		s.send(&eventstypes.TaskExecStarted{
+			ContainerID: container.ID,
+			ExecID:      r.ExecID,
+			Pid:         uint32(p.Pid()),
+		})
+	}
+	s.eventSendMu.Unlock()
+	return &taskAPI.StartResponse{
+		Pid: uint32(p.Pid()),
+	}, nil
 }
 ```
 containerd shim（v2) 进程
