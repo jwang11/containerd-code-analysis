@@ -749,3 +749,8 @@ func (p *process) Start(ctx context.Context) error {
 	return nil
 }
 ```
+containerd shim（v2) 进程
+containerd shim v2是containerd shim的v2版本。shim进程是用来“垫”在containerd和runc启动的容器之间的，其主要作用是：
+1. 调用runc命令创建、启动、停止、删除容器等
+2. 作为容器的父进程，当容器中的第一个实例进程被杀死后，负责给其子进程收尸，避免出现僵尸进程
+3. 监控容器中运行的进程状态，当容器执行完成后，通过exit fifo文件来返回容器进程结束状态
