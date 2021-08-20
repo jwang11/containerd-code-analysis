@@ -754,3 +754,39 @@ containerd shim v2是containerd shim的v2版本。shim进程是用来“垫”�
 1. 调用runc命令创建、启动、停止、删除容器等
 2. 作为容器的父进程，当容器中的第一个实例进程被杀死后，负责给其子进程收尸，避免出现僵尸进程
 3. 监控容器中运行的进程状态，当容器执行完成后，通过exit fifo文件来返回容器进程结束状态
+
+task.Start()就如同上面所说，会向containerd中的task service发送启动任务请求，task service中会将启动任务请求转发给containerd-shim（v2）进程，containerd-shim（v2）进程又会调用runc来将上面创建的容器启动起来。具体过程是怎样的呢？
+
+Start函数的实现伪代码如下：
+```
+func (t *task) Start(ctx context.Context) error {
+       //向containerd内部的task service发送StartTaskRequest请求
+        t.client.TaskService().Start(ctx, &tasks.StartRequest{
+                ContainerID: t.id,
+        })
+    ...
+}
+```
+其主要逻辑就是向task service发送一个StartTaskRequest。task service收到StartTaskRequest请求后的处理函数伪代码如下：
+```
+func (l *local) Start(ctx context.Context, r *api.StartRequest, _ ...grpc.CallOption) (*api.StartResponse, error) {
+        // 获取到先前创建的task
+        t, err := l.getTask(ctx, r.ContainerID)
+        p := runtime.Process(t)
+        p, err = t.Process(ctx, r.ExecID);
+       // 这里调用shim接口向shim进程发送时start请求
+        err := p.Start(ctx);
+       ...
+}
+ 
+// p.Start()
+func (s *shim) Start(ctx context.Context) error {
+       //向shim发送请求
+        response, err := s.task.Start(ctx, &task.StartRequest{
+                ID: s.ID(),
+        })
+        ...
+}
+```
+上面这个函数主要就是做了一件事情：将CreateTaskRequest请求又转给containerd-shim(v2)进程处理。containerd-shim(v2)进程又会调用 runc --root ${root} --bundle ${bundle} --log ${log} --pid-file ${pidfile} start ${id}将先前创建的容器启动起来。
+到此RunPodSandbox处理的解析结束。
