@@ -662,7 +662,7 @@ func (t *task) Start(ctx context.Context) error {
 }
 ```
 
-### Service端
+### 服务端创建容器的Task
 - ***TaskService.Create***，外部service的Create -> 内部service.Create。注意，先得到v2 shim runtime，然后调用v2.create.
 ```diff
 func (l *local) Create(ctx context.Context, r *api.CreateTaskRequest, _ ...grpc.CallOption) (*api.CreateTaskResponse, error) {
@@ -738,7 +738,7 @@ func (l *local) getRuntime(name string) (runtime.PlatformRuntime, error) {
 
 ```
 - TaskManager_v2_shim实现了PlatformRuntime接口(https://github.com/containerd/containerd/blob/main/runtime/v2/manager.go)，参考Runtime服务.md。这里我们只看Create
-```
+```diff
 // TaskManager manages v2 shim's and their tasks
 type TaskManager struct {
 	root                   string
@@ -753,7 +753,7 @@ type TaskManager struct {
 
 // Create a new task
 func (m *TaskManager) Create(ctx context.Context, id string, opts runtime.CreateOpts) (_ runtime.Task, retErr error) {
-	bundle, err := NewBundle(ctx, m.root, m.state, id, opts.Spec.Value)
++	bundle, err := NewBundle(ctx, m.root, m.state, id, opts.Spec.Value)
 	if err != nil {
 		return nil, err
 	}
@@ -763,7 +763,7 @@ func (m *TaskManager) Create(ctx context.Context, id string, opts runtime.Create
 		}
 	}()
 
-	shim, err := m.startShim(ctx, bundle, id, opts)
++	shim, err := m.startShim(ctx, bundle, id, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -773,7 +773,7 @@ func (m *TaskManager) Create(ctx context.Context, id string, opts runtime.Create
 		}
 	}()
 
-	t, err := shim.Create(ctx, opts)
++	t, err := shim.Create(ctx, opts)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to create shim")
 	}
@@ -784,7 +784,71 @@ func (m *TaskManager) Create(ctx context.Context, id string, opts runtime.Create
 
 	return t, nil
 }
+```
 
+- NewBundle的实现。准备rootfs，work，state路径和并写入spec文件
+```diff
+func NewBundle(ctx context.Context, root, state, id string, spec []byte) (b *Bundle, err error) {
+	if err := identifiers.Validate(id); err != nil {
+		return nil, errors.Wrapf(err, "invalid task id %s", id)
+	}
+
+	ns, err := namespaces.NamespaceRequired(ctx)
+	if err != nil {
+		return nil, err
+	}
+	work := filepath.Join(root, ns, id)
+	b = &Bundle{
+		ID:        id,
+		Path:      filepath.Join(state, ns, id),
+		Namespace: ns,
+	}
+	var paths []string
+	defer func() {
+		if err != nil {
+			for _, d := range paths {
+				os.RemoveAll(d)
+			}
+		}
+	}()
+	// create state directory for the bundle
+	if err := os.MkdirAll(filepath.Dir(b.Path), 0711); err != nil {
+		return nil, err
+	}
++	if err := os.Mkdir(b.Path, 0711); err != nil {
+		return nil, err
+	}
+	paths = append(paths, b.Path)
+	// create working directory for the bundle
+	if err := os.MkdirAll(filepath.Dir(work), 0711); err != nil {
+		return nil, err
+	}
++	rootfs := filepath.Join(b.Path, "rootfs")
+	if err := os.MkdirAll(rootfs, 0711); err != nil {
+		return nil, err
+	}
+	paths = append(paths, rootfs)
++	if err := os.Mkdir(work, 0711); err != nil {
+		if !os.IsExist(err) {
+			return nil, err
+		}
+		os.RemoveAll(work)
+		if err := os.Mkdir(work, 0711); err != nil {
+			return nil, err
+		}
+	}
+	paths = append(paths, work)
+	// symlink workdir
+	if err := os.Symlink(work, filepath.Join(b.Path, "work")); err != nil {
+		return nil, err
+	}
+	// write the spec to the bundle
++	err = ioutil.WriteFile(filepath.Join(b.Path, configFilename), spec, 0666)
+	return b, err
+}
+```
+- startShim的实现
+```diff
 func (m *TaskManager) startShim(ctx context.Context, bundle *Bundle, id string, opts runtime.CreateOpts) (*shim, error) {
 	ns, err := namespaces.NamespaceRequired(ctx)
 	if err != nil {
@@ -795,7 +859,7 @@ func (m *TaskManager) startShim(ctx context.Context, bundle *Bundle, id string, 
 	if topts == nil {
 		topts = opts.RuntimeOptions
 	}
-
++	// containerd-shim-runc-shim --ns xxx --address xxx --bundle xxxx --id xxxx
 	b := shimBinary(bundle, opts.Runtime, m.containerdAddress, m.containerdTTRPCAddress)
 	shim, err := b.Start(ctx, topts, func() {
 		log.G(ctx).WithField("id", id).Info("shim disconnected")
@@ -813,10 +877,129 @@ func (m *TaskManager) startShim(ctx context.Context, bundle *Bundle, id string, 
 
 	return shim, nil
 }
+```
+- shimBinary实现
+```
+func shimBinary(bundle *Bundle, runtime, containerdAddress string, containerdTTRPCAddress string) *binary {
+	return &binary{
+		bundle:                 bundle,
+		runtime:                runtime,
+		containerdAddress:      containerdAddress,
+		containerdTTRPCAddress: containerdTTRPCAddress,
+	}
+}
+type binary struct {
+	runtime                string
+	containerdAddress      string
+	containerdTTRPCAddress string
+	bundle                 *Bundle
+}
 
-// Get a specific task
-func (m *TaskManager) Get(ctx context.Context, id string) (runtime.Task, error) {
-	return m.tasks.Get(ctx, id)
+func (b *binary) Start(ctx context.Context, opts *types.Any, onClose func()) (_ *shim, err error) {
+	args := []string{"-id", b.bundle.ID}
+	switch logrus.GetLevel() {
+	case logrus.DebugLevel, logrus.TraceLevel:
+		args = append(args, "-debug")
+	}
+	args = append(args, "start")
+
+	cmd, err := client.Command(
+		ctx,
+		b.runtime,
+		b.containerdAddress,
+		b.containerdTTRPCAddress,
+		b.bundle.Path,
+		opts,
+		args...,
+	)
+	if err != nil {
+		return nil, err
+	}
+	// Windows needs a namespace when openShimLog
+	ns, _ := namespaces.Namespace(ctx)
+	shimCtx, cancelShimLog := context.WithCancel(namespaces.WithNamespace(context.Background(), ns))
+	defer func() {
+		if err != nil {
+			cancelShimLog()
+		}
+	}()
+	f, err := openShimLog(shimCtx, b.bundle, client.AnonDialer)
+	if err != nil {
+		return nil, errors.Wrap(err, "open shim log pipe")
+	}
+	defer func() {
+		if err != nil {
+			f.Close()
+		}
+	}()
+	// open the log pipe and block until the writer is ready
+	// this helps with synchronization of the shim
+	// copy the shim's logs to containerd's output
+	go func() {
+		defer f.Close()
+		_, err := io.Copy(os.Stderr, f)
+		// To prevent flood of error messages, the expected error
+		// should be reset, like os.ErrClosed or os.ErrNotExist, which
+		// depends on platform.
+		err = checkCopyShimLogError(ctx, err)
+		if err != nil {
+			log.G(ctx).WithError(err).Error("copy shim log")
+		}
+	}()
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil, errors.Wrapf(err, "%s", out)
+	}
+	address := strings.TrimSpace(string(out))
+	conn, err := client.Connect(address, client.AnonDialer)
+	if err != nil {
+		return nil, err
+	}
+	onCloseWithShimLog := func() {
+		onClose()
+		cancelShimLog()
+		f.Close()
+	}
+	client := ttrpc.NewClient(conn, ttrpc.WithOnClose(onCloseWithShimLog))
+	return &shim{
+		bundle: b.bundle,
+		client: client,
+		task:   task.NewTaskClient(client),
+	}, nil
+}
+```
+
+- shim.Create实现
+```
+func (s *shim) Create(ctx context.Context, opts runtime.CreateOpts) (runtime.Task, error) {
+	topts := opts.TaskOptions
+	if topts == nil {
+		topts = opts.RuntimeOptions
+	}
+	request := &task.CreateTaskRequest{
+		ID:         s.ID(),
+		Bundle:     s.bundle.Path,
+		Stdin:      opts.IO.Stdin,
+		Stdout:     opts.IO.Stdout,
+		Stderr:     opts.IO.Stderr,
+		Terminal:   opts.IO.Terminal,
+		Checkpoint: opts.Checkpoint,
+		Options:    topts,
+	}
+	for _, m := range opts.Rootfs {
+		request.Rootfs = append(request.Rootfs, &types.Mount{
+			Type:    m.Type,
+			Source:  m.Source,
+			Options: m.Options,
+		})
+	}
+
+	_, err := s.task.Create(ctx, request)
+	if err != nil {
+		return nil, errdefs.FromGRPC(err)
+	}
+
+	return s, nil
 }
 ```
 
