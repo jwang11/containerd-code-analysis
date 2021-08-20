@@ -1004,25 +1004,22 @@ func (s *shim) Create(ctx context.Context, opts runtime.CreateOpts) (runtime.Tas
 ```
 
 - ***TaskService.Start***。从外部service的Start -> 内部service的Start
-
-```
-func (s *service) Start(ctx context.Context, r *api.StartRequest) (*api.StartResponse, error) {
-	return s.local.Start(ctx, r)
-}
-```
-```
+```diff
 func (l *local) Start(ctx context.Context, r *api.StartRequest, _ ...grpc.CallOption) (*api.StartResponse, error) {
++	// 返回runtime.Task接口类型
 	t, err := l.getTask(ctx, r.ContainerID)
 	if err != nil {
 		return nil, err
 	}
++	//强制转换到runtime.Process	
 	p := runtime.Process(t)
 	if r.ExecID != "" {
 		if p, err = t.Process(ctx, r.ExecID); err != nil {
 			return nil, errdefs.ToGRPC(err)
 		}
 	}
-	if err := p.Start(ctx); err != nil {
++	// 启动task，其实就是runc命令行
++	if err := p.Start(ctx); err != nil {
 		return nil, errdefs.ToGRPC(err)
 	}
 	state, err := p.State(ctx)
