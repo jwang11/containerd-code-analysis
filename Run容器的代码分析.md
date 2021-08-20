@@ -1193,6 +1193,83 @@ func (s *service) Start(ctx context.Context, r *taskAPI.StartRequest) (*taskAPI.
 	}, nil
 }
 ```
+
+- container.start
+```
+// Start a container process
+func (c *Container) Start(ctx context.Context, r *task.StartRequest) (process.Process, error) {
+	p, err := c.Process(r.ExecID)
+	if err != nil {
+		return nil, err
+	}
+	if err := p.Start(ctx); err != nil {
+		return nil, err
+	}
+	if c.Cgroup() == nil && p.Pid() > 0 {
+		var cg interface{}
+		if cgroups.Mode() == cgroups.Unified {
+			g, err := cgroupsv2.PidGroupPath(p.Pid())
+			if err != nil {
+				logrus.WithError(err).Errorf("loading cgroup2 for %d", p.Pid())
+			}
+			cg, err = cgroupsv2.LoadManager("/sys/fs/cgroup", g)
+			if err != nil {
+				logrus.WithError(err).Errorf("loading cgroup2 for %d", p.Pid())
+			}
+		} else {
+			cg, err = cgroups.Load(cgroups.V1, cgroups.PidPath(p.Pid()))
+			if err != nil {
+				logrus.WithError(err).Errorf("loading cgroup for %d", p.Pid())
+			}
+		}
+		c.cgroup = cg
+	}
+	return p, nil
+}
+
+// Process returns the process by id
+func (c *Container) Process(id string) (process.Process, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if id == "" {
+		if c.process == nil {
+			return nil, errors.Wrapf(errdefs.ErrFailedPrecondition, "container must be created")
+		}
+		return c.process, nil
+	}
+	p, ok := c.processes[id]
+	if !ok {
+		return nil, errors.Wrapf(errdefs.ErrNotFound, "process does not exist %s", id)
+	}
+	return p, nil
+}
+```
+- (https://github.com/containerd/containerd/blob/main/pkg/process/init.go)
+```
+// Start the init process
+func (p *Init) Start(ctx context.Context) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	return p.initState.Start(ctx)
+}
+```
+
+```
+func (s *createdState) Start(ctx context.Context) error {
+	if err := s.p.start(ctx); err != nil {
+		return err
+	}
+	return s.transition("running")
+}
+```
+
+```
+func (p *Init) start(ctx context.Context) error {
+	err := p.runtime.Start(ctx, p.id)
+	return p.runtimeError(err, "OCI runtime start failed")
+}
+```
 containerd shim（v2) 进程
 containerd shim v2是containerd shim的v2版本。shim进程是用来“垫”在containerd和runc启动的容器之间的，其主要作用是：
 1. 调用runc命令创建、启动、停止、删除容器等
