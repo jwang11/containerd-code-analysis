@@ -533,7 +533,7 @@ func NewTask(ctx gocontext.Context, client *containerd.Client, container contain
 }
 ```
 
-- container.NewTask
+- container.NewTask。此函数会向containerd中的task service发送创建任务请求，task service中会启动containerd-shim（v2）进程调用runc来创建容器。
 ```
 type task struct {
 	client *Client
@@ -577,6 +577,7 @@ func (c *container) NewTask(ctx context.Context, ioCreate cio.Creator, opts ...N
 		if err != nil {
 			return nil, err
 		}
++		// 获取mounts的命令行		
 		mounts, err := s.Mounts(ctx, r.SnapshotKey)
 		if err != nil {
 			return nil, err
@@ -585,6 +586,7 @@ func (c *container) NewTask(ctx context.Context, ioCreate cio.Creator, opts ...N
 		if err != nil {
 			return nil, err
 		}
++		// 解析mounts命令行		
 		for _, m := range mounts {
 			if spec.Linux != nil && spec.Linux.MountLabel != "" {
 				context := label.FormatMountLabel("", spec.Linux.MountLabel)
@@ -632,6 +634,7 @@ func (c *container) NewTask(ctx context.Context, ioCreate cio.Creator, opts ...N
 	if info.Checkpoint != nil {
 		request.Checkpoint = info.Checkpoint
 	}
++	// 请求task service创建container	
 +	response, err := c.client.TaskService().Create(ctx, request)
 	if err != nil {
 		return nil, errdefs.FromGRPC(err)
@@ -660,6 +663,346 @@ func (t *task) Start(ctx context.Context) error {
 ```
 
 ### Service端
+- ***TaskService.Create***，外部service的Create -> 内部service.Create。注意，service里取到v2 runtime，然后调用v2.create.
+```diff
+func (l *local) Create(ctx context.Context, r *api.CreateTaskRequest, _ ...grpc.CallOption) (*api.CreateTaskResponse, error) {
+	container, err := l.getContainer(ctx, r.ContainerID)
+	if err != nil {
+		return nil, errdefs.ToGRPC(err)
+	}
+...
+	opts := runtime.CreateOpts{
+		Spec: container.Spec,
+		IO: runtime.IO{
+			Stdin:    r.Stdin,
+			Stdout:   r.Stdout,
+			Stderr:   r.Stderr,
+			Terminal: r.Terminal,
+		},
+		Checkpoint:     checkpointPath,
+		Runtime:        container.Runtime.Name,
+		RuntimeOptions: container.Runtime.Options,
+		TaskOptions:    r.Options,
+	}
+	for _, m := range r.Rootfs {
+		opts.Rootfs = append(opts.Rootfs, mount.Mount{
+			Type:    m.Type,
+			Source:  m.Source,
+			Options: m.Options,
+		})
+	}
+	if strings.HasPrefix(container.Runtime.Name, "io.containerd.runtime.v1.") {
+		log.G(ctx).Warn("runtime v1 is deprecated since containerd v1.4, consider using runtime v2")
+	} else if container.Runtime.Name == plugin.RuntimeRuncV1 {
+		log.G(ctx).Warnf("%q is deprecated since containerd v1.4, consider using %q", plugin.RuntimeRuncV1, plugin.RuntimeRuncV2)
+	}
++	// 获取PlatformRuntime，默认是taskmanger_v2_shim
++	rtime, err := l.getRuntime(container.Runtime.Name)
+	if err != nil {
+		return nil, err
+	}
+	_, err = rtime.Get(ctx, r.ContainerID)
+	if err != nil && err != runtime.ErrTaskNotExists {
+		return nil, errdefs.ToGRPC(err)
+	}
+	if err == nil {
+		return nil, errdefs.ToGRPC(fmt.Errorf("task %s already exists", r.ContainerID))
+	}
++	// 调用taskmanger_v2_shim.Create来创建container，要通过Shim	
++	c, err := rtime.Create(ctx, r.ContainerID, opts)
+	if err != nil {
+		return nil, errdefs.ToGRPC(err)
+	}
+	labels := map[string]string{"runtime": container.Runtime.Name}
+	if err := l.monitor.Monitor(c, labels); err != nil {
+		return nil, errors.Wrap(err, "monitor task")
+	}
+	pid, err := c.PID(ctx)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to get task pid")
+	}
+	return &api.CreateTaskResponse{
+		ContainerID: r.ContainerID,
+		Pid:         pid,
+	}, nil
+}
+
+func (l *local) getRuntime(name string) (runtime.PlatformRuntime, error) {
+	runtime, ok := l.runtimes[name]
+	if !ok {
+		// one runtime to rule them all
+		return l.v2Runtime, nil
+	}
+	return runtime, nil
+}
+
+// PlatformRuntime is responsible for the creation and management of
+// tasks and processes for a platform.
+type PlatformRuntime interface {
+	// ID of the runtime
+	ID() string
+	// Create creates a task with the provided id and options.
+	Create(ctx context.Context, taskID string, opts CreateOpts) (Task, error)
+	// Get returns a task.
+	Get(ctx context.Context, taskID string) (Task, error)
+	// Tasks returns all the current tasks for the runtime.
+	// Any container runs at most one task at a time.
+	Tasks(ctx context.Context, all bool) ([]Task, error)
+	// Add adds a task into runtime.
+	Add(ctx context.Context, task Task) error
+	// Delete remove a task.
+	Delete(ctx context.Context, taskID string) (*Exit, error)
+}
+```
+- TaskManager_v2_shim实现了PlatformRuntime接口(https://github.com/containerd/containerd/blob/main/runtime/v2/manager.go)
+```
+// TaskManager manages v2 shim's and their tasks
+type TaskManager struct {
+	root                   string
+	state                  string
+	containerdAddress      string
+	containerdTTRPCAddress string
+
+	tasks      *runtime.TaskList
+	events     *exchange.Exchange
+	containers containers.Store
+}
+
+// ID of the task manager
+func (m *TaskManager) ID() string {
+	return fmt.Sprintf("%s.%s", plugin.RuntimePluginV2, "task")
+}
+
+// Create a new task
+func (m *TaskManager) Create(ctx context.Context, id string, opts runtime.CreateOpts) (_ runtime.Task, retErr error) {
+	bundle, err := NewBundle(ctx, m.root, m.state, id, opts.Spec.Value)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if retErr != nil {
+			bundle.Delete()
+		}
+	}()
+
+	shim, err := m.startShim(ctx, bundle, id, opts)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if retErr != nil {
+			m.deleteShim(shim)
+		}
+	}()
+
+	t, err := shim.Create(ctx, opts)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to create shim")
+	}
+
+	if err := m.tasks.Add(ctx, t); err != nil {
+		return nil, errors.Wrap(err, "failed to add task")
+	}
+
+	return t, nil
+}
+
+func (m *TaskManager) startShim(ctx context.Context, bundle *Bundle, id string, opts runtime.CreateOpts) (*shim, error) {
+	ns, err := namespaces.NamespaceRequired(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	topts := opts.TaskOptions
+	if topts == nil {
+		topts = opts.RuntimeOptions
+	}
+
+	b := shimBinary(bundle, opts.Runtime, m.containerdAddress, m.containerdTTRPCAddress)
+	shim, err := b.Start(ctx, topts, func() {
+		log.G(ctx).WithField("id", id).Info("shim disconnected")
+
+		cleanupAfterDeadShim(context.Background(), id, ns, m.tasks, m.events, b)
+		// Remove self from the runtime task list. Even though the cleanupAfterDeadShim()
+		// would publish taskExit event, but the shim.Delete() would always failed with ttrpc
+		// disconnect and there is no chance to remove this dead task from runtime task lists.
+		// Thus it's better to delete it here.
+		m.tasks.Delete(ctx, id)
+	})
+	if err != nil {
+		return nil, errors.Wrap(err, "start failed")
+	}
+
+	return shim, nil
+}
+
+// deleteShim attempts to properly delete and cleanup shim after error
+func (m *TaskManager) deleteShim(shim *shim) {
+	dctx, cancel := timeout.WithContext(context.Background(), cleanupTimeout)
+	defer cancel()
+
+	_, errShim := shim.delete(dctx, m.tasks.Delete)
+	if errShim != nil {
+		if errdefs.IsDeadlineExceeded(errShim) {
+			dctx, cancel = timeout.WithContext(context.Background(), cleanupTimeout)
+			defer cancel()
+		}
+		shim.Shutdown(dctx)
+		shim.Close()
+	}
+}
+
+// Get a specific task
+func (m *TaskManager) Get(ctx context.Context, id string) (runtime.Task, error) {
+	return m.tasks.Get(ctx, id)
+}
+
+// Add a runtime task
+func (m *TaskManager) Add(ctx context.Context, task runtime.Task) error {
+	return m.tasks.Add(ctx, task)
+}
+
+// Delete a runtime task
+func (m *TaskManager) Delete(ctx context.Context, id string) (*runtime.Exit, error) {
+	task, err := m.tasks.Get(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+
+	shim := task.(*shim)
+	exit, err := shim.delete(ctx, m.tasks.Delete)
+	if err != nil {
+		return nil, err
+	}
+
+	return exit, err
+}
+
+// Tasks lists all tasks
+func (m *TaskManager) Tasks(ctx context.Context, all bool) ([]runtime.Task, error) {
+	return m.tasks.GetAll(ctx, all)
+}
+
+func (m *TaskManager) loadExistingTasks(ctx context.Context) error {
+	nsDirs, err := ioutil.ReadDir(m.state)
+	if err != nil {
+		return err
+	}
+	for _, nsd := range nsDirs {
+		if !nsd.IsDir() {
+			continue
+		}
+		ns := nsd.Name()
+		// skip hidden directories
+		if len(ns) > 0 && ns[0] == '.' {
+			continue
+		}
+		log.G(ctx).WithField("namespace", ns).Debug("loading tasks in namespace")
+		if err := m.loadTasks(namespaces.WithNamespace(ctx, ns)); err != nil {
+			log.G(ctx).WithField("namespace", ns).WithError(err).Error("loading tasks in namespace")
+			continue
+		}
+		if err := m.cleanupWorkDirs(namespaces.WithNamespace(ctx, ns)); err != nil {
+			log.G(ctx).WithField("namespace", ns).WithError(err).Error("cleanup working directory in namespace")
+			continue
+		}
+	}
+	return nil
+}
+
+func (m *TaskManager) loadTasks(ctx context.Context) error {
+	ns, err := namespaces.NamespaceRequired(ctx)
+	if err != nil {
+		return err
+	}
+	shimDirs, err := ioutil.ReadDir(filepath.Join(m.state, ns))
+	if err != nil {
+		return err
+	}
+	for _, sd := range shimDirs {
+		if !sd.IsDir() {
+			continue
+		}
+		id := sd.Name()
+		// skip hidden directories
+		if len(id) > 0 && id[0] == '.' {
+			continue
+		}
+		bundle, err := LoadBundle(ctx, m.state, id)
+		if err != nil {
+			// fine to return error here, it is a programmer error if the context
+			// does not have a namespace
+			return err
+		}
+		// fast path
+		bf, err := ioutil.ReadDir(bundle.Path)
+		if err != nil {
+			bundle.Delete()
+			log.G(ctx).WithError(err).Errorf("fast path read bundle path for %s", bundle.Path)
+			continue
+		}
+		if len(bf) == 0 {
+			bundle.Delete()
+			continue
+		}
+		container, err := m.container(ctx, id)
+		if err != nil {
+			log.G(ctx).WithError(err).Errorf("loading container %s", id)
+			if err := mount.UnmountAll(filepath.Join(bundle.Path, "rootfs"), 0); err != nil {
+				log.G(ctx).WithError(err).Errorf("forceful unmount of rootfs %s", id)
+			}
+			bundle.Delete()
+			continue
+		}
+		binaryCall := shimBinary(bundle, container.Runtime.Name, m.containerdAddress, m.containerdTTRPCAddress)
+		shim, err := loadShim(ctx, bundle, func() {
+			log.G(ctx).WithField("id", id).Info("shim disconnected")
+
+			cleanupAfterDeadShim(context.Background(), id, ns, m.tasks, m.events, binaryCall)
+			// Remove self from the runtime task list.
+			m.tasks.Delete(ctx, id)
+		})
+		if err != nil {
+			cleanupAfterDeadShim(ctx, id, ns, m.tasks, m.events, binaryCall)
+			continue
+		}
+		m.tasks.Add(ctx, shim)
+	}
+	return nil
+}
+
+func (m *TaskManager) container(ctx context.Context, id string) (*containers.Container, error) {
+	container, err := m.containers.Get(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	return &container, nil
+}
+
+func (m *TaskManager) cleanupWorkDirs(ctx context.Context) error {
+	ns, err := namespaces.NamespaceRequired(ctx)
+	if err != nil {
+		return err
+	}
+	dirs, err := ioutil.ReadDir(filepath.Join(m.root, ns))
+	if err != nil {
+		return err
+	}
+	for _, d := range dirs {
+		// if the task was not loaded, cleanup and empty working directory
+		// this can happen on a reboot where /run for the bundle state is cleaned up
+		// but that persistent working dir is left
+		if _, err := m.tasks.Get(ctx, d.Name()); err != nil {
+			path := filepath.Join(m.root, ns, d.Name())
+			if err := os.RemoveAll(path); err != nil {
+				log.G(ctx).WithError(err).Errorf("cleanup working dir %s", path)
+			}
+		}
+	}
+	return nil
+}
+```
+
 - ***TaskService.Start***。从外部service的Start -> 内部service的Start
 
 ```
