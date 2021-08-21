@@ -175,4 +175,123 @@ func New(ctx context.Context, id string, publisher shim.Publisher, shutdown func
 	}
 	return s, nil
 }
+
+// service is the shim implementation of a remote shim over GRPC
+type service struct {
+	mu          sync.Mutex
+	eventSendMu sync.Mutex
+
+	context  context.Context
+	events   chan interface{}
+	platform stdio.Platform
+	ec       chan runcC.Exit
+	ep       oom.Watcher
+
+	// id only used in cleanup case
+	id string
+
+	containers map[string]*runc.Container
+
+	shimAddress string
+	cancel      func()
+}
+```
+
+- shim service实现
+```diff
+// initialize a single epoll fd to manage our consoles. `initPlatform` should
+// only be called once.
+func (s *service) initPlatform() error {
+	if s.platform != nil {
+		return nil
+	}
++	p, err := runc.NewPlatform()
+	if err != nil {
+		return err
+	}
+	s.platform = p
+	return nil
+}
+
+func NewPlatform() (stdio.Platform, error) {
+	epoller, err := console.NewEpoller()
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to initialize epoller")
+	}
+	go epoller.Wait()
+	return &linuxPlatform{
+		epoller: epoller,
+	}, nil
+}
+
+// Create a new initial process and container with the underlying OCI runtime
+func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *taskAPI.CreateTaskResponse, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	container, err := runc.NewContainer(ctx, s.platform, r)
+	if err != nil {
+		return nil, err
+	}
+
+	s.container = container
+
+	s.send(&eventstypes.TaskCreate{
+		ContainerID: r.ID,
+		Bundle:      r.Bundle,
+		Rootfs:      r.Rootfs,
+		IO: &eventstypes.TaskIO{
+			Stdin:    r.Stdin,
+			Stdout:   r.Stdout,
+			Stderr:   r.Stderr,
+			Terminal: r.Terminal,
+		},
+		Checkpoint: r.Checkpoint,
+		Pid:        uint32(container.Pid()),
+	})
+
+	return &taskAPI.CreateTaskResponse{
+		Pid: uint32(container.Pid()),
+	}, nil
+}
+
+// Start a process
+func (s *service) Start(ctx context.Context, r *taskAPI.StartRequest) (*taskAPI.StartResponse, error) {
+	container, err := s.getContainer()
+	if err != nil {
+		return nil, err
+	}
+
+	// hold the send lock so that the start events are sent before any exit events in the error case
+	s.eventSendMu.Lock()
+	p, err := container.Start(ctx, r)
+	if err != nil {
+		s.eventSendMu.Unlock()
+		return nil, errdefs.ToGRPC(err)
+	}
+	switch r.ExecID {
+	case "":
+		if cg, ok := container.Cgroup().(cgroups.Cgroup); ok {
+			if err := s.ep.Add(container.ID, cg); err != nil {
+				logrus.WithError(err).Error("add cg to OOM monitor")
+			}
+		} else {
+			logrus.WithError(errdefs.ErrNotImplemented).Error("add cg to OOM monitor")
+		}
+		s.send(&eventstypes.TaskStart{
+			ContainerID: container.ID,
+			Pid:         uint32(p.Pid()),
+		})
+	default:
+		s.send(&eventstypes.TaskExecStarted{
+			ContainerID: container.ID,
+			ExecID:      r.ExecID,
+			Pid:         uint32(p.Pid()),
+		})
+	}
+	s.eventSendMu.Unlock()
+	return &taskAPI.StartResponse{
+		Pid: uint32(p.Pid()),
+	}, nil
+}
 ```
