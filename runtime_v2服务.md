@@ -3,7 +3,7 @@
 
 ### Runtime_v2的注册
 (https://github.com/containerd/containerd/blob/main/runtime/v2/manager.go)
-- RuntimePluginV2注册申请
+- RuntimePluginV2注册申请，InitFn返回TaskManager作为该plugin的instance
 ```
 // Config for the v2 runtime
 type Config struct {
@@ -49,6 +49,28 @@ func init() {
 			return New(ic.Context, ic.Root, ic.State, ic.Address, ic.TTRPCAddress, events, cs)
 		},
 	})
+}
+
+// New task manager for v2 shims
+func New(ctx context.Context, root, state, containerdAddress, containerdTTRPCAddress string, events *exchange.Exchange, cs containers.Store) (*TaskManager, error) {
+	for _, d := range []string{root, state} {
+		if err := os.MkdirAll(d, 0711); err != nil {
+			return nil, err
+		}
+	}
+	m := &TaskManager{
+		root:                   root,
+		state:                  state,
+		containerdAddress:      containerdAddress,
+		containerdTTRPCAddress: containerdTTRPCAddress,
+		tasks:                  runtime.NewTaskList(),
+		events:                 events,
+		containers:             cs,
+	}
+	if err := m.loadExistingTasks(ctx); err != nil {
+		return nil, err
+	}
+	return m, nil
 }
 ```
 - container store
@@ -293,31 +315,6 @@ func (s *containerStore) Delete(ctx context.Context, id string) error {
 
 		return nil
 	})
-}
-```
-
-- New返回TaskManager
-```
-// New task manager for v2 shims
-func New(ctx context.Context, root, state, containerdAddress, containerdTTRPCAddress string, events *exchange.Exchange, cs containers.Store) (*TaskManager, error) {
-	for _, d := range []string{root, state} {
-		if err := os.MkdirAll(d, 0711); err != nil {
-			return nil, err
-		}
-	}
-	m := &TaskManager{
-		root:                   root,
-		state:                  state,
-		containerdAddress:      containerdAddress,
-		containerdTTRPCAddress: containerdTTRPCAddress,
-		tasks:                  runtime.NewTaskList(),
-		events:                 events,
-		containers:             cs,
-	}
-	if err := m.loadExistingTasks(ctx); err != nil {
-		return nil, err
-	}
-	return m, nil
 }
 ```
 
