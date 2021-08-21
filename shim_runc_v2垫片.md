@@ -134,6 +134,53 @@ func run(id string, initFunc Init, config Config) error {
 		}
 	}
 }
+
+// NewShimClient creates a new shim server client
+func NewShimClient(ctx context.Context, svc shimapi.TaskService, signals chan os.Signal) *Client {
+	s := &Client{
+		service: svc,
+		context: ctx,
+		signals: signals,
+	}
+	return s
+}
+
+// Serve the shim server
+func (s *Client) Serve() error {
+	dump := make(chan os.Signal, 32)
+	setupDumpStacks(dump)
+
+	path, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+	server, err := newServer()
+	if err != nil {
+		return errors.Wrap(err, "failed creating server")
+	}
+
+	logrus.Debug("registering ttrpc server")
+	shimapi.RegisterTaskService(server, s.service)
+
+	if err := serve(s.context, server, socketFlag); err != nil {
+		return err
+	}
+	logger := logrus.WithFields(logrus.Fields{
+		"pid":       os.Getpid(),
+		"path":      path,
+		"namespace": namespaceFlag,
+	})
+	go func() {
+		for range dump {
+			dumpStacks(logger)
+		}
+	}()
+	return handleSignals(s.context, logger, s.signals)
+}
+
+func newServer() (*ttrpc.Server, error) {
+	return ttrpc.NewServer(ttrpc.WithServerHandshaker(ttrpc.UnixSocketRequireSameUser()))
+}
 ```
 
 - [v2.New](https://github.com/containerd/containerd/blob/main/runtime/v2/runc/v2/service.go)
@@ -197,7 +244,7 @@ type service struct {
 }
 ```
 
-- shim service实现
+- shim_runc service实现
 ```diff
 // initialize a single epoll fd to manage our consoles. `initPlatform` should
 // only be called once.
