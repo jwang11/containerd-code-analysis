@@ -1255,6 +1255,7 @@ func (p *Init) Start(ctx context.Context) error {
 }
 ```
 
+- s.p这里又回到了Init
 ```
 func (s *createdState) Start(ctx context.Context) error {
 	if err := s.p.start(ctx); err != nil {
@@ -1263,13 +1264,59 @@ func (s *createdState) Start(ctx context.Context) error {
 	return s.transition("running")
 }
 ```
-
+- p.runtime实际是runc库(https://github.com/opencontainers/runc),它包装了runc的命令行接口
 ```
 func (p *Init) start(ctx context.Context) error {
 	err := p.runtime.Start(ctx, p.id)
 	return p.runtimeError(err, "OCI runtime start failed")
 }
 ```
+
+- runc库
+```
+// Create creates a new container and returns its pid if it was created successfully
+func (r *Runc) Create(context context.Context, id, bundle string, opts *CreateOpts) error {
+	args := []string{"create", "--bundle", bundle}
+	if opts != nil {
+		oargs, err := opts.args()
+		if err != nil {
+			return err
+		}
+		args = append(args, oargs...)
+	}
+	cmd := r.command(context, append(args, id)...)
+	if opts != nil && opts.IO != nil {
+		opts.Set(cmd)
+	}
+	cmd.ExtraFiles = opts.ExtraFiles
+
+	if cmd.Stdout == nil && cmd.Stderr == nil {
+		data, err := cmdOutput(cmd, true, nil)
+		defer putBuf(data)
+		if err != nil {
+			return fmt.Errorf("%s: %s", err, data.String())
+		}
+		return nil
+	}
+	ec, err := Monitor.Start(cmd)
+	if err != nil {
+		return err
+	}
+	if opts != nil && opts.IO != nil {
+		if c, ok := opts.IO.(StartCloser); ok {
+			if err := c.CloseAfterStart(); err != nil {
+				return err
+			}
+		}
+	}
+	status, err := Monitor.Wait(cmd, ec)
+	if err == nil && status != 0 {
+		err = fmt.Errorf("%s did not terminate successfully: %w", cmd.Args[0], &ExitError{status})
+	}
+	return err
+}
+```
+
 containerd shim（v2) 进程
 containerd shim v2是containerd shim的v2版本。shim进程是用来“垫”在containerd和runc启动的容器之间的，其主要作用是：
 1. 调用runc命令创建、启动、停止、删除容器等
