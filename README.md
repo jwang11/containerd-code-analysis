@@ -12,3 +12,4 @@ Analyze source code structure of [containerd project](https://github.com/contain
 - Task服务
 - 代码路径ctr_run_image
 - 代码路径ctr_pull_image 
+![containerd代码流程](containerd_run_code.png)
