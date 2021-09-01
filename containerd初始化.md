@@ -5,7 +5,7 @@
 
 ### 主程序
 
-[cmd/containerd/main.go](https://github.com/containerd/containerd/blob/main/cmd/containerd/main.go)是入口文件，看起来非常简洁
+[cmd/containerd/main.go](https://github.com/containerd/containerd/blob/main/cmd/containerd/main.go)是入口文件，非常简洁
 
 ```
 func main() {
@@ -117,7 +117,7 @@ can be used and modified as necessary as a custom configuration.`
 		tl, err := sys.GetLocalListener(config.TTRPC.Address, config.TTRPC.UID, config.TTRPC.GID)
 		if err != nil {
 			return errors.Wrapf(err, "failed to get listener for main ttrpc endpoint")
-		}
+		}		
 +		serve(ctx, tl, server.ServeTTRPC)
 
 		if config.GRPC.TCPAddress != "" {
@@ -152,9 +152,9 @@ can be used and modified as necessary as a custom configuration.`
 ```
 该函数是创建并初始化containerd server，
 - 准备GRPCServer，TTRPCServer，tcpServer服务接口
-- 加载plugins，逐个p.Init(initContext)
+- 加载plugins，逐个调用p.Init(initContext)来初始化
 
-[service/server/server.go](https://github.com/containerd/containerd/blob/7d4c95ff04a4b65ddd12963ef20ff7b5d3d24b96/services/server/server.go#L83)
+[service/server/server.go](https://github.com/containerd/containerd/blob/master/services/server/server.go#L83)
 ```diff
 // New creates and initializes a new containerd server
 func New(ctx context.Context, config *srvconfig.Config) (*Server, error) {
@@ -162,6 +162,7 @@ func New(ctx context.Context, config *srvconfig.Config) (*Server, error) {
 		return nil, err
 	}
 ...
+-	// 自动在指定路径load plugins
 +	plugins, err := LoadPlugins(ctx, config)
 ...
 +	ttrpcServer, err := newTTRPCServer()
