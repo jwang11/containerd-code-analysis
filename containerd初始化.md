@@ -100,6 +100,7 @@ can be used and modified as necessary as a custom configuration.`
 			"revision": version.Revision,
 		}).Info("starting containerd")
 
+-		// Server的创建及初始化
 +		server, err := server.New(ctx, config)
 		if err != nil {
 			return err
@@ -151,8 +152,8 @@ can be used and modified as necessary as a custom configuration.`
 + server, err := server.New(ctx, config)
 ```
 该函数是创建并初始化containerd server，
-- 准备GRPCServer，TTRPCServer，tcpServer服务接口
 - 加载plugins，逐个调用p.Init(initContext)来初始化
+- 创建GRPCServer，TTRPCServer，tcpServer并注册服务
 
 [service/server/server.go](https://github.com/containerd/containerd/blob/master/services/server/server.go#L83)
 ```diff
@@ -276,7 +277,7 @@ func New(ctx context.Context, config *srvconfig.Config) (*Server, error) {
 
 ```diff
 func LoadPlugins(ctx context.Context, config *srvconfig.Config) ([]*plugin.Registration, error) {
-+ //自动加载Plugins，通常被编译成binary，放在指定的目录下
+-	// 自动加载Plugins。这些plugins通常被编译成binary，放在指定的目录PlguinDir下
 	// load all plugins into containerd
 	path := config.PluginDir
 	if path == "" {
@@ -285,7 +286,7 @@ func LoadPlugins(ctx context.Context, config *srvconfig.Config) ([]*plugin.Regis
 +	if err := plugin.Load(path); err != nil {
 		return nil, err
 	}
-+ //手动加载Plugin
+-	// 部分plugins需要手动加载
 	// load additional plugins that don't automatically register themselves
 	plugin.Register(&plugin.Registration{
 		Type: plugin.ContentPlugin,
@@ -415,6 +416,7 @@ func LoadPlugins(ctx context.Context, config *srvconfig.Config) ([]*plugin.Regis
 	}
 ```
 
+### 启动服务
 - 以grpc server为例，安装serve function
 - 回到***cmd/containerd/command/main.go***，在完成server创建和初始化后，每种server都要被serve一次，表示服务开启。
 ```diff
