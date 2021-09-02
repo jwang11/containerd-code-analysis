@@ -249,7 +249,7 @@ func NewImageStore(db *DB) images.Store {
 }
 ```
 
-- imageStore.Get
+- ***Get***
 ```
 func (s *imageStore) Get(ctx context.Context, name string) (images.Image, error) {
 	var image images.Image
@@ -305,7 +305,7 @@ func (s *imageStore) Get(ctx context.Context, name string) (images.Image, error)
 	return image, nil
 }
 ```
-> ***Get -> readImage***
+>> ***Get -> readImage***
 ```
 func readImage(image *images.Image, bkt *bolt.Bucket) error {
 	if err := boltutil.ReadTimestamps(bkt, &image.CreatedAt, &image.UpdatedAt); err != nil {
@@ -348,7 +348,7 @@ func readImage(image *images.Image, bkt *bolt.Bucket) error {
 }
 ```
 
-- ***imageStore.List***
+- ***List***
 ```
 func (s *imageStore) List(ctx context.Context, fs ...string) ([]images.Image, error) {
 	namespace, err := namespaces.NamespaceRequired(ctx)
@@ -393,7 +393,7 @@ func (s *imageStore) List(ctx context.Context, fs ...string) ([]images.Image, er
 }
 ```
 
-- ***imageStore.Create***
+- ***Create***
 ```diff
 func (s *imageStore) Create(ctx context.Context, image images.Image) (images.Image, error) {
 	namespace, err := namespaces.NamespaceRequired(ctx)
@@ -557,7 +557,7 @@ func (s *imageStore) Update(ctx context.Context, image images.Image, fieldpaths 
 }
 ```
 
-- imageStore.Delete
+- ***Delete***
 ```
 func (s *imageStore) Delete(ctx context.Context, name string, opts ...images.DeleteOpt) error {
 	namespace, err := namespaces.NamespaceRequired(ctx)
