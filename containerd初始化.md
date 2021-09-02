@@ -218,7 +218,7 @@ func New(ctx context.Context, config *srvconfig.Config) (*Server, error) {
 			}
 			initContext.Config = pc
 		}
-+		//初始化plugin		
+-		//初始化plugin		
 +		result := p.Init(initContext)
 +		if err := initialized.Add(result); err != nil {
 			return nil, errors.Wrapf(err, "could not add plugin result to plugin set")
@@ -228,7 +228,7 @@ func New(ctx context.Context, config *srvconfig.Config) (*Server, error) {
 ...
 
 		delete(required, reqID)
-+		// 把三种类型server的services分别放入各自的列表
+-		// 把三种类型server的services分别放入各自的列表
 		// check for grpc services that should be registered with the server
 		if src, ok := instance.(plugin.Service); ok {
 +			grpcServices = append(grpcServices, src)
@@ -250,7 +250,7 @@ func New(ctx context.Context, config *srvconfig.Config) (*Server, error) {
 		return nil, errors.Errorf("required plugin %s not included", missing)
 	}
 
-+	//按照server类型注册services
+-	//按照server类型注册services
 	// register services after all plugins have been initialized
 	for _, service := range grpcServices {
 		if err := service.Register(grpcServer); err != nil {
@@ -419,7 +419,8 @@ func LoadPlugins(ctx context.Context, config *srvconfig.Config) ([]*plugin.Regis
 - 回到***cmd/containerd/command/main.go***，在完成server创建和初始化后，每种server都要被serve一次，表示服务开启。
 ```diff
 		l, err := sys.GetLocalListener(config.GRPC.Address, config.GRPC.UID, config.GRPC.GID)
-		serve(ctx, l, server.ServeGRPC)
+-		// 注意，第三个参数serveFunc = server.ServeGRPC
++		serve(ctx, l, server.ServeGRPC)
 ```
 
 https://github.com/containerd/containerd/blob/d0be7b90f1306d2c7d59e28d3ffd74eddcddfa21/cmd/containerd/command/main.go#L259
