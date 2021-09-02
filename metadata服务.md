@@ -216,7 +216,10 @@ func writeToCompletion(path string, data []byte, mode os.FileMode) error {
 }
 ```
 > ***local store的Writer***
+```diff
+- Writer的设计是支持简单的事务处理，内容先写入ingest里，commit的时候再导入blob
 ```
+```diff
 // Writer begins or resumes the active writer identified by ref. If the writer
 // is already in use, an error is returned. Only one writer may be in use per
 // ref at a time.
