@@ -52,7 +52,7 @@ func LoadPlugins(ctx context.Context, config *srvconfig.Config) ([]*plugin.Regis
 					}
 					continue
 				}
-+				// 得到所有的Snapshotter				
+-				// 得到所有的Snapshotter				
 +				snapshotters[name] = sn.(snapshots.Snapshotter)
 			}
 
