@@ -386,11 +386,11 @@ func LoadPlugins(ctx context.Context, config *srvconfig.Config) ([]*plugin.Regis
 			initContext.Config = pc
 		}
 +		result := p.Init(initContext)
-+		//按照plugin的类型和ID，加入Set
+-		// 按照plugin的类型和ID，加入Set
 +		if err := initialized.Add(result); err != nil {
 			return nil, errors.Wrapf(err, "could not add plugin result to plugin set")
 		}
-+		// instance里放的是plugin需要输出的service
+-		// instance里放的是plugin需要输出的service
 +		instance, err := result.Instance()
 ...
 
@@ -405,7 +405,7 @@ func LoadPlugins(ctx context.Context, config *srvconfig.Config) ([]*plugin.Regis
 		if service, ok := instance.(plugin.TCPService); ok {
 			tcpServices = append(tcpServices, service)
 		}
-+		//把完成初始化的plugin加到Server.plugins
+-		// 把完成初始化的plugin加到Server.plugins
 +		s.plugins = append(s.plugins, result)
 	}
 ```
