@@ -2,9 +2,9 @@
 > Image服务提供镜像的pull，push等操作
 
 ### 外部服务GPRCPlugin的注册
-- 依赖ServicePlugin中的services.ImagesService
+- 依赖ServicePlugin中的services.ImagesService<br>
 [services/images/service.go](https://github.com/containerd/containerd/blob/main/services/images/service.go)
-```
+```diff
 func init() {
 	plugin.Register(&plugin.Registration{
 		Type: plugin.GRPCPlugin,
@@ -25,15 +25,48 @@ func init() {
 			if err != nil {
 				return nil, err
 			}
-			return &service{local: i.(imagesapi.ImagesClient)}, nil
++			return &service{local: i.(imagesapi.ImagesClient)}, nil
 		},
 	})
+}
+```
+- ***外部服务接口***
+```diff
+type service struct {
+	local imagesapi.ImagesClient
+}
+
+var _ imagesapi.ImagesServer = &service{}
+
+func (s *service) Register(server *grpc.Server) error {
+	imagesapi.RegisterImagesServer(server, s)
+	return nil
+}
+
+func (s *service) Get(ctx context.Context, req *imagesapi.GetImageRequest) (*imagesapi.GetImageResponse, error) {
+	return s.local.Get(ctx, req)
+}
+
+func (s *service) List(ctx context.Context, req *imagesapi.ListImagesRequest) (*imagesapi.ListImagesResponse, error) {
+	return s.local.List(ctx, req)
+}
+
+func (s *service) Create(ctx context.Context, req *imagesapi.CreateImageRequest) (*imagesapi.CreateImageResponse, error) {
+	return s.local.Create(ctx, req)
+}
+
+func (s *service) Update(ctx context.Context, req *imagesapi.UpdateImageRequest) (*imagesapi.UpdateImageResponse, error) {
+	return s.local.Update(ctx, req)
+}
+
+func (s *service) Delete(ctx context.Context, req *imagesapi.DeleteImageRequest) (*ptypes.Empty, error) {
+	return s.local.Delete(ctx, req)
 }
 ```
 
 ### 内部服务ServicePlugin的注册
 - 依赖两个底层服务MetadataPlugin和GCPlugin
-```
+```diff
 func init() {
 	plugin.Register(&plugin.Registration{
 		Type: plugin.ServicePlugin,
@@ -52,8 +85,8 @@ func init() {
 				return nil, err
 			}
 
-			return &local{
-				store:     metadata.NewImageStore(m.(*metadata.DB)),
++			return &local{
++				store:     metadata.NewImageStore(m.(*metadata.DB)),
 				publisher: ic.Events,
 				gc:        g.(gcScheduler),
 			}, nil
@@ -63,7 +96,7 @@ func init() {
 ```
 
 ### 内部服务ServicePlugin的实现
-```
+```diff
 type local struct {
 	store     images.Store
 	gc        gcScheduler
@@ -204,7 +237,7 @@ type Image struct {
 	CreatedAt, UpdatedAt time.Time
 }
 ```
-- imageStore是基于metadata.DB上封装
+- ***imageStore是基于metadata.DB上封装***
 ```
 type imageStore struct {
 	db *DB
@@ -272,8 +305,50 @@ func (s *imageStore) Get(ctx context.Context, name string) (images.Image, error)
 	return image, nil
 }
 ```
+> ***Get -> readImage***
+```
+func readImage(image *images.Image, bkt *bolt.Bucket) error {
+	if err := boltutil.ReadTimestamps(bkt, &image.CreatedAt, &image.UpdatedAt); err != nil {
+		return err
+	}
 
-- imageStore.List
+	labels, err := boltutil.ReadLabels(bkt)
+	if err != nil {
+		return err
+	}
+	image.Labels = labels
+
+	image.Target.Annotations, err = boltutil.ReadAnnotations(bkt)
+	if err != nil {
+		return err
+	}
+
+	tbkt := bkt.Bucket(bucketKeyTarget)
+	if tbkt == nil {
+		return errors.New("unable to read target bucket")
+	}
+	return tbkt.ForEach(func(k, v []byte) error {
+		if v == nil {
+			return nil // skip it? a bkt maybe?
+		}
+
+		// TODO(stevvooe): This is why we need to use byte values for
+		// keys, rather than full arrays.
+		switch string(k) {
+		case string(bucketKeyDigest):
+			image.Target.Digest = digest.Digest(v)
+		case string(bucketKeyMediaType):
+			image.Target.MediaType = string(v)
+		case string(bucketKeySize):
+			image.Target.Size, _ = binary.Varint(v)
+		}
+
+		return nil
+	})
+}
+```
+
+- ***imageStore.List***
 ```
 func (s *imageStore) List(ctx context.Context, fs ...string) ([]images.Image, error) {
 	namespace, err := namespaces.NamespaceRequired(ctx)
@@ -318,8 +393,8 @@ func (s *imageStore) List(ctx context.Context, fs ...string) ([]images.Image, er
 }
 ```
 
-- imageStore.Create
-```
+- ***imageStore.Create***
+```diff
 func (s *imageStore) Create(ctx context.Context, image images.Image) (images.Image, error) {
 	namespace, err := namespaces.NamespaceRequired(ctx)
 	if err != nil {
@@ -355,7 +430,47 @@ func (s *imageStore) Create(ctx context.Context, image images.Image) (images.Ima
 	return image, nil
 }
 ```
-- imageStore.Update
+> ***Create -> writeImage***
+```diff
+func writeImage(bkt *bolt.Bucket, image *images.Image) error {
+	if err := boltutil.WriteTimestamps(bkt, image.CreatedAt, image.UpdatedAt); err != nil {
+		return err
+	}
+
+	if err := boltutil.WriteLabels(bkt, image.Labels); err != nil {
+		return errors.Wrapf(err, "writing labels for image %v", image.Name)
+	}
+
+	if err := boltutil.WriteAnnotations(bkt, image.Target.Annotations); err != nil {
+		return errors.Wrapf(err, "writing Annotations for image %v", image.Name)
+	}
+
+	// write the target bucket
+	tbkt, err := bkt.CreateBucketIfNotExists(bucketKeyTarget)
+	if err != nil {
+		return err
+	}
+
+	sizeEncoded, err := encodeInt(image.Target.Size)
+	if err != nil {
+		return err
+	}
+
+	for _, v := range [][2][]byte{
+		{bucketKeyDigest, []byte(image.Target.Digest)},
+		{bucketKeyMediaType, []byte(image.Target.MediaType)},
+		{bucketKeySize, sizeEncoded},
+	} {
+		if err := tbkt.Put(v[0], v[1]); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+```
+
+- ***Update***
 ```
 func (s *imageStore) Update(ctx context.Context, image images.Image, fieldpaths ...string) (images.Image, error) {
 	namespace, err := namespaces.NamespaceRequired(ctx)
@@ -467,60 +582,5 @@ func (s *imageStore) Delete(ctx context.Context, name string, opts ...images.Del
 
 		return nil
 	})
-}
-```
-
-### 外部Service接口的实现
-- ImageServer的外部service接口
-```
-// ImagesServer is the server API for Images service.
-type ImagesServer interface {
-	// Get returns an image by name.
-	Get(context.Context, *GetImageRequest) (*GetImageResponse, error)
-	// List returns a list of all images known to containerd.
-	List(context.Context, *ListImagesRequest) (*ListImagesResponse, error)
-	// Create an image record in the metadata store.
-	//
-	// The name of the image must be unique.
-	Create(context.Context, *CreateImageRequest) (*CreateImageResponse, error)
-	// Update assigns the name to a given target image based on the provided
-	// image.
-	Update(context.Context, *UpdateImageRequest) (*UpdateImageResponse, error)
-	// Delete deletes the image by name.
-	Delete(context.Context, *DeleteImageRequest) (*types1.Empty, error)
-}
-```
-
-- Service的实现
-```
-type service struct {
-	local imagesapi.ImagesClient
-}
-
-var _ imagesapi.ImagesServer = &service{}
-
-func (s *service) Register(server *grpc.Server) error {
-	imagesapi.RegisterImagesServer(server, s)
-	return nil
-}
-
-func (s *service) Get(ctx context.Context, req *imagesapi.GetImageRequest) (*imagesapi.GetImageResponse, error) {
-	return s.local.Get(ctx, req)
-}
-
-func (s *service) List(ctx context.Context, req *imagesapi.ListImagesRequest) (*imagesapi.ListImagesResponse, error) {
-	return s.local.List(ctx, req)
-}
-
-func (s *service) Create(ctx context.Context, req *imagesapi.CreateImageRequest) (*imagesapi.CreateImageResponse, error) {
-	return s.local.Create(ctx, req)
-}
-
-func (s *service) Update(ctx context.Context, req *imagesapi.UpdateImageRequest) (*imagesapi.UpdateImageResponse, error) {
-	return s.local.Update(ctx, req)
-}
-
-func (s *service) Delete(ctx context.Context, req *imagesapi.DeleteImageRequest) (*ptypes.Empty, error) {
-	return s.local.Delete(ctx, req)
 }
 ```
