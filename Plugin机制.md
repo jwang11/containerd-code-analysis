@@ -31,8 +31,8 @@ const (
 	EventPlugin Type = "io.containerd.event.v1"
 )
 ```
-Plugin类型主要分成三个层次。
-1. GPRCPlugin属于顶层，把containerd里的各种service通过GRPC提供给Client使用，它包括
+Plugin从功能上主要分成三个层次。
+1. GPRCPlugin属于顶层，把containerd里的各种服务通过GRPC提供给Client使用。它的实例包括
   	- content
   	- snapshots
   	- image
@@ -44,7 +44,7 @@ Plugin类型主要分成三个层次。
 	- leases
 	- introspection
 
-2. ServicePlugin属于服务层，定义了containerd里的各种service，它包括
+2. ServicePlugin属于服务层，定义了containerd里的各种service，为顶层GPRC提供支持。它包括
 ```
 const (
 	// ContentService is id of content service.
@@ -67,7 +67,7 @@ const (
 	IntrospectionService = "introspection-service"
 )
 ```
-3. 以*ServiceName*+Plugin命名的是Service的底层实现以及一些内部功能模块。
+3. 以*ServiceName* + Plugin命名的是底层功能实现，它们可以为上面两层提供支持，也可以是内部模块。
 	- ContentPlugin
 	- SnapshotPlugin
 	- DiffPlugin
@@ -76,22 +76,22 @@ const (
 	- TaskMonitorPlugin
 	- GCPlugin
 
-- plugin要通过注册和初始化两步，才能在containerd里生效。
+- plugin要通过注册初始化，才能在containerd里生效。
 
 ## Plugin的注册
-- 注册plugin，必须先定义一个***Registeration***结构作为注册申请，并填好必要的信息。
+- 注册plugin，必须先定义一个***Registeration***结构作为注册申请，并填好必需的信息。
 ```diff
 // Registration contains information for registering a plugin
 type Registration struct {
-+	// 类型，就是12种之一
+-	// 类型，就是12种之一
 	// Type of the plugin
 	Type Type
-+	// 唯一的ID，同类型可以多个Plugin	
+-	// 唯一的ID，同类型可以多个Plugin	
 	// ID of the plugin
 	ID string
 	// Config specific to the plugin
 	Config interface{}
-+	// 依赖的plugins，必须是已经注册过的
+-	// 依赖的plugins，必须是已经注册过的
 	// Requires is a list of plugins that the registered plugin requires to be available
 	Requires []Type
 
@@ -143,7 +143,7 @@ func Register(r *Registration) {
 ```
 
 ## Plugin的初始化
-- Plugin的初始化入口是***Registration.Init***。顺利执行如果没有错误，表示初始化完成，生成***Plugin***结构作为返回结果。
+- Plugin的初始化入口是***Registration.Init***。初始化完成后，生成***Plugin***结构作为返回结果。
 - ***InitFn***是由plugin提供的初始化函数，它会在***Registration.Init***里被调用，返回结果（通常是service）存入***Registration.instance***。
 ```diff
 // Init the registered plugin
@@ -160,7 +160,7 @@ func (r *Registration) Init(ic *InitContext) *Plugin {
 ```
 
 ### Plugin结构和Plugin Set
-- Plugin初始化完成后，就会产生***Plugin***结构实例
+- Plugin初始化后生成***Plugin***结构实例
 ```diff
 // Plugin represents an initialized plugin, used with an init context.
 type Plugin struct {
@@ -220,7 +220,7 @@ func (ps *Set) Add(p *Plugin) error {
 	return nil
 }
 
-+ //返回该类型的第一个plugin的Instance
+- //返回该类型的第一个plugin的Instance
 // Get returns the first plugin by its type
 func (ps *Set) Get(t Type) (interface{}, error) {
 	for _, v := range ps.byTypeAndID[t] {
@@ -236,20 +236,20 @@ func (ps *Set) Get(t Type) (interface{}, error) {
 // InitContext is used for plugin inititalization
 type InitContext struct {
 	Context      context.Context
-+	//plugin的根目录
+-	//plugin的根目录
 	Root         string
 	State        string
 	Config       interface{}
-+	//grpc地址
+-	//grpc地址
 	Address      string
-+	//ttrpc地址
+-	//ttrpc地址
 	TTRPCAddress string
 
 	// deprecated: will be removed in 2.0, use plugin.EventType
 	Events *exchange.Exchange
 
 	Meta *Meta // plugins can fill in metadata at init.
-+	//已经注册过的所有同类型plugin集合
+-	//已经注册过的所有同类型plugin集合
 	plugins *Set
 }
 
@@ -301,8 +301,9 @@ func (i *InitContext) GetByType(t Type) (map[string]*Plugin, error) {
 func NewContext(ctx context.Context, r *Registration, plugins *Set, root, state string) *InitContext {
 	return &InitContext{
 		Context: ctx,
-+		// 比如/var/lib/containerd/io.containerd.content.v1.content		
+-		// 如/var/lib/containerd/io.containerd.content.v1.content		
 		Root:    filepath.Join(root, r.URI()),
+-		// 如/var/run/containerd/io.containerd.runtime.v2.task/		
 		State:   filepath.Join(state, r.URI()),
 		Meta: &Meta{
 			Exports: map[string]string{},
@@ -352,7 +353,7 @@ func LoadPlugins(ctx context.Context, config *srvconfig.Config) ([]*plugin.Regis
 		}
 		// TODO: Remove this in 2.0 and let event plugin crease it
 		events      = exchange.NewExchange()
-+		//收集在初始化过程中，已经完成初始化的plugins，最后会放在InitContext里
+-		//收集在初始化过程中，已经完成初始化的plugins，最后会放在InitContext里
 +		initialized = plugin.NewPluginSet()
 		required    = make(map[string]struct{})
 	)
