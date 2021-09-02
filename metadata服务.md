@@ -74,7 +74,7 @@ func LoadPlugins(ctx context.Context, config *srvconfig.Config) ([]*plugin.Regis
 
 			path := filepath.Join(ic.Root, "meta.db")
 			ic.Meta.Exports["path"] = path
-+			// 创建bolt数据库
+-			// 创建bolt数据库
 +			db, err := bolt.Open(path, 0644, nil)
 			if err != nil {
 				return nil, err
@@ -465,8 +465,8 @@ func NewDB(db *bolt.DB, cs content.Store, ss map[string]snapshots.Snapshotter, o
 }
 ```
 
-- Meta DB里最重要的成员之一是Content Store，它是***newContentStore***生成的
-```
+- ***Meta DB里最重要的成员之一是Content Store，它基于local store***
+```diff
 // newContentStore returns a namespaced content store using an existing
 // content store interface.
 // policy defines the sharing behavior for content between namespaces. Both
@@ -609,9 +609,11 @@ var (
 ```
 
 ### contentStores实现
+```diff
 - contentStore结构里面包括了content.Store接口，但为了支持namespace等feature，重新实现了部分content.Store接口
 - ***Info***是实现label的读取以及create/update时间戳。根据digest作为key，查找bolt数据库，返回键值对
 ```
+```diff
 func (cs *contentStore) Info(ctx context.Context, dgst digest.Digest) (content.Info, error) {
 	ns, err := namespaces.NamespaceRequired(ctx)
 	if err != nil {
@@ -656,7 +658,7 @@ func readInfo(info *content.Info, bkt *bolt.Bucket) error {
 	return nil
 }
 ```
-- Update实现label的写入，同时更新时间戳
+- ***Update实现Info的修改，如label，同时更新时间戳***
 ```
 func (cs *contentStore) Update(ctx context.Context, info content.Info, fieldpaths ...string) (content.Info, error) {
 	ns, err := namespaces.NamespaceRequired(ctx)
@@ -718,6 +720,25 @@ func (cs *contentStore) Update(ctx context.Context, info content.Info, fieldpath
 	return updated, nil
 }
 
+func writeInfo(info *content.Info, bkt *bolt.Bucket) error {
+	if err := boltutil.WriteTimestamps(bkt, info.CreatedAt, info.UpdatedAt); err != nil {
+		return err
+	}
+
+	if err := boltutil.WriteLabels(bkt, info.Labels); err != nil {
+		return errors.Wrapf(err, "writing labels for info %v", info.Digest)
+	}
+
+	// Write size
+	sizeEncoded, err := encodeInt(info.Size)
+	if err != nil {
+		return err
+	}
+
+	return bkt.Put(bucketKeySize, sizeEncoded)
+}
+
+
 // update gets a writable bolt db transaction either from the context
 // or starts a new one with the provided bolt database.
 func update(ctx context.Context, db transactor, fn func(*bolt.Tx) error) error {
@@ -730,7 +751,7 @@ func update(ctx context.Context, db transactor, fn func(*bolt.Tx) error) error {
 	return fn(tx)
 }
 ```
-- writer
+- ***Writer***
 ```
 func (cs *contentStore) Writer(ctx context.Context, opts ...content.WriterOpt) (content.Writer, error) {
 	var wOpts content.WriterOpts
@@ -1109,7 +1130,7 @@ func (m *DB) Init(ctx context.Context) error {
 }
 ```
 
-- Meta DB上定义的一些操作，以后会被各种Service用到
+### Meta DB提供的方法，以后会被各种Service用到
 ```
 // ContentStore returns a namespaced content store
 // proxied to a content store.
