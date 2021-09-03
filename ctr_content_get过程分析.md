@@ -276,3 +276,189 @@ $ctr content get sha256:5430e98eba646ef4a34baff035f6f7483761c873711febd48fbcca38
 docker-entrypoint.d/
 docker-entrypoint.d/30-tune-worker-processes.sh
 ```
+
+### [代码入口](https://github.com/containerd/containerd/blob/main/cmd/ctr/commands/content/content.go)
+```diff
+	getCommand = cli.Command{
+		Name:        "get",
+		Usage:       "get the data for an object",
+		ArgsUsage:   "[<digest>, ...]",
+		Description: "display the image object",
+		Action: func(context *cli.Context) error {
+			dgst, err := digest.Parse(context.Args().First())
+			if err != nil {
+				return err
+			}
+			client, ctx, cancel, err := commands.NewClient(context)
+			if err != nil {
+				return err
+			}
+			defer cancel()
++			cs := client.ContentStore()
+			ra, err := cs.ReaderAt(ctx, ocispec.Descriptor{Digest: dgst})
+			if err != nil {
+				return err
+			}
+			defer ra.Close()
+
+			// use 1MB buffer like we do for ingesting
+			buf := make([]byte, 1<<20)
++			_, err = io.CopyBuffer(os.Stdout, content.NewReader(ra), buf)
+			return err
+		},
+	}
+```
+
+- *** client.ContentStore***
+```diff
+// ContentStore returns the underlying content Store
+func (c *Client) ContentStore() content.Store {
+	if c.contentStore != nil {
+		return c.contentStore
+	}
+	c.connMu.Lock()
+	defer c.connMu.Unlock()
+	return contentproxy.NewContentStore(contentapi.NewContentClient(c.conn))
+}
+
+func NewContentStore(client contentapi.ContentClient) content.Store {
+	return &proxyContentStore{
+		client: client,
+	}
+}
+```
+- ***cs.ReaderAt***
+```diff
+// ReaderAt ignores MediaType.
+func (pcs *proxyContentStore) ReaderAt(ctx context.Context, desc ocispec.Descriptor) (content.ReaderAt, error) {
+	i, err := pcs.Info(ctx, desc.Digest)
+	if err != nil {
+		return nil, err
+	}
+
+	return &remoteReaderAt{
+		ctx:    ctx,
+		digest: desc.Digest,
+-   // 通过前面Info得到content的size
++		size:   i.Size,
+		client: pcs.client,
+	}, nil
+}
+
+// Info holds content specific information
+//
+// TODO(stevvooe): Consider a very different name for this struct. Info is way
+// to general. It also reads very weird in certain context, like pluralization.
+type Info struct {
+	Digest    digest.Digest
+	Size      int64
+	CreatedAt time.Time
+	UpdatedAt time.Time
+	Labels    map[string]string
+}
+```
+
+> ***remoteReaderAt***
+```diff
+type remoteReaderAt struct {
+	ctx    context.Context
+	digest digest.Digest
+	size   int64
+	client contentapi.ContentClient
+}
+
+func (ra *remoteReaderAt) Size() int64 {
+	return ra.size
+}
+
+func (ra *remoteReaderAt) ReadAt(p []byte, off int64) (n int, err error) {
+	rr := &contentapi.ReadContentRequest{
+		Digest: ra.digest,
+		Offset: off,
+		Size_:  int64(len(p)),
+	}
+	// we need a child context with cancel, or the eventually called
+	// grpc.NewStream will leak the goroutine until the whole thing is cleared.
+	// See comment at https://godoc.org/google.golang.org/grpc#ClientConn.NewStream
+	childCtx, cancel := context.WithCancel(ra.ctx)
+	// we MUST cancel the child context; see comment above
+	defer cancel()
+- // 调用server端的/containerd.services.content.v1.Content/Read
++	rc, err := ra.client.Read(childCtx, rr)
+	if err != nil {
+		return 0, err
+	}
+
+	for len(p) > 0 {
+		var resp *contentapi.ReadContentResponse
+		// fill our buffer up until we can fill p.
+		resp, err = rc.Recv()
+		if err != nil {
+			return n, err
+		}
+
+		copied := copy(p, resp.Data)
+		n += copied
+		p = p[copied:]
+	}
+	return n, nil
+}
+```
+
+>> ***Server端content Service.Read***
+```diff
+func (s *service) Read(req *api.ReadContentRequest, session api.Content_ReadServer) error {
+	if err := req.Digest.Validate(); err != nil {
+		return status.Errorf(codes.InvalidArgument, "%v: %v", req.Digest, err)
+	}
+
+	oi, err := s.store.Info(session.Context(), req.Digest)
+	if err != nil {
+		return errdefs.ToGRPC(err)
+	}
+
+	ra, err := s.store.ReaderAt(session.Context(), ocispec.Descriptor{Digest: req.Digest})
+	if err != nil {
+		return errdefs.ToGRPC(err)
+	}
+	defer ra.Close()
+
+	var (
+		offset = req.Offset
+		// size is read size, not the expected size of the blob (oi.Size), which the caller might not be aware of.
+		// offset+size can be larger than oi.Size.
+		size = req.Size_
+
+		// TODO(stevvooe): Using the global buffer pool. At 32KB, it is probably
+		// little inefficient for work over a fast network. We can tune this later.
+		p = bufPool.Get().(*[]byte)
+	)
+	defer bufPool.Put(p)
+
+	if offset < 0 {
+		offset = 0
+	}
+
+	if offset > oi.Size {
+		return status.Errorf(codes.OutOfRange, "read past object length %v bytes", oi.Size)
+	}
+
+	if size <= 0 || offset+size > oi.Size {
+		size = oi.Size - offset
+	}
+
+	_, err = io.CopyBuffer(
+		&readResponseWriter{session: session},
+		io.NewSectionReader(ra, offset, size), *p)
+	return errdefs.ToGRPC(err)
+}
+```
+
+- ***content.NewReader(ra)***
+```
+// NewReader returns a io.Reader from a ReaderAt
+func NewReader(ra ReaderAt) io.Reader {
+	rd := io.NewSectionReader(ra, 0, ra.Size())
+	return rd
+}
+```
