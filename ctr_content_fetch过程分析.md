@@ -102,7 +102,8 @@ type FetchConfig struct {
 
 // NewFetchConfig returns the default FetchConfig from cli flags
 func NewFetchConfig(ctx context.Context, clicontext *cli.Context) (*FetchConfig, error) {
-	resolver, err := commands.GetResolver(ctx, clicontext)
+-	// 建立一个Resolver
++	resolver, err := commands.GetResolver(ctx, clicontext)
 	if err != nil {
 		return nil, err
 	}
@@ -141,6 +142,68 @@ func NewFetchConfig(ctx context.Context, clicontext *cli.Context) (*FetchConfig,
 	}
 
 	return config, nil
+}
+```
+> ***NewFetchConfig -> GetResolver***
+```diff
+// GetResolver prepares the resolver from the environment and options
+func GetResolver(ctx gocontext.Context, clicontext *cli.Context) (remotes.Resolver, error) {
+	username := clicontext.String("user")
+	var secret string
+	if i := strings.IndexByte(username, ':'); i > 0 {
+		secret = username[i+1:]
+		username = username[0:i]
+	}
+	options := docker.ResolverOptions{
+		Tracker: PushTracker,
+	}
+	if username != "" {
+		if secret == "" {
+			fmt.Printf("Password: ")
+
+			var err error
+			secret, err = passwordPrompt()
+			if err != nil {
+				return nil, err
+			}
+
+			fmt.Print("\n")
+		}
+	} else if rt := clicontext.String("refresh"); rt != "" {
+		secret = rt
+	}
+
+	hostOptions := config.HostOptions{}
+	hostOptions.Credentials = func(host string) (string, string, error) {
+		// If host doesn't match...
+		// Only one host
+		return username, secret, nil
+	}
+	if clicontext.Bool("plain-http") {
+		hostOptions.DefaultScheme = "http"
+	}
+	defaultTLS, err := resolverDefaultTLS(clicontext)
+	if err != nil {
+		return nil, err
+	}
+	hostOptions.DefaultTLS = defaultTLS
+	if hostDir := clicontext.String("hosts-dir"); hostDir != "" {
+		hostOptions.HostDir = config.HostDirFromRoot(hostDir)
+	}
+
+	if clicontext.Bool("http-dump") {
+		hostOptions.UpdateClient = func(client *http.Client) error {
+			client.Transport = &DebugTransport{
+				transport: client.Transport,
+				writer:    log.G(ctx).Writer(),
+			}
+			return nil
+		}
+	}
+
+	options.Hosts = config.ConfigureHosts(ctx, hostOptions)
+
+	return docker.NewResolver(options), nil
 }
 ```
 
