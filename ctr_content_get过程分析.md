@@ -295,7 +295,8 @@ docker-entrypoint.d/30-tune-worker-processes.sh
 			}
 			defer cancel()
 +			cs := client.ContentStore()
-			ra, err := cs.ReaderAt(ctx, ocispec.Descriptor{Digest: dgst})
+-			// 根据digest，得到remote的ReaderAt对象
++			ra, err := cs.ReaderAt(ctx, ocispec.Descriptor{Digest: dgst})
 			if err != nil {
 				return err
 			}
@@ -303,6 +304,7 @@ docker-entrypoint.d/30-tune-worker-processes.sh
 
 			// use 1MB buffer like we do for ingesting
 			buf := make([]byte, 1<<20)
+-			// 隐式调用ReaderAt对象里的ReadAt方法
 +			_, err = io.CopyBuffer(os.Stdout, content.NewReader(ra), buf)
 			return err
 		},
