@@ -1,5 +1,5 @@
 # ctr_content_fetch过程分析
-> 针对命令行$ctr content fetch image_ref的执行过程，进行代码分析。
+> 针对命令行$ctr content fetch image_ref的执行过程，进行代码分析，帮助理解content service。
 
 ### 命令行执行
 ```diff
@@ -19,6 +19,9 @@ elapsed: 7.7 s                                                                  
 ```
 
 ### [命令入口](https://github.com/containerd/containerd/blob/main/cmd/ctr/commands/content/fetch.go)
+```diff
+- 该命令的作用是把image所有相关资源从仓库拉下来，并把config转换成runtime格式。
+```
 ```diff
 var fetchCommand = cli.Command{
 	Name:      "fetch",
