@@ -338,7 +338,7 @@ func (pcs *proxyContentStore) ReaderAt(ctx context.Context, desc ocispec.Descrip
 		return nil, err
 	}
 
-	return &remoteReaderAt{
++	return &remoteReaderAt{
 		ctx:    ctx,
 		digest: desc.Digest,
 -   // 通过前面Info得到content的size
@@ -373,6 +373,7 @@ func (ra *remoteReaderAt) Size() int64 {
 	return ra.size
 }
 
+- // CopyBuffer的时候，会隐式调用ReadAt方法
 func (ra *remoteReaderAt) ReadAt(p []byte, off int64) (n int, err error) {
 	rr := &contentapi.ReadContentRequest{
 		Digest: ra.digest,
@@ -419,7 +420,8 @@ func (s *service) Read(req *api.ReadContentRequest, session api.Content_ReadServ
 		return errdefs.ToGRPC(err)
 	}
 
-	ra, err := s.store.ReaderAt(session.Context(), ocispec.Descriptor{Digest: req.Digest})
+-	// 取到local store的ReaderAt对象
++	ra, err := s.store.ReaderAt(session.Context(), ocispec.Descriptor{Digest: req.Digest})
 	if err != nil {
 		return errdefs.ToGRPC(err)
 	}
@@ -449,7 +451,8 @@ func (s *service) Read(req *api.ReadContentRequest, session api.Content_ReadServ
 		size = oi.Size - offset
 	}
 
-	_, err = io.CopyBuffer(
+-	// 把local Store里内容（文件方式管理）copy出来
++	_, err = io.CopyBuffer(
 		&readResponseWriter{session: session},
 		io.NewSectionReader(ra, offset, size), *p)
 	return errdefs.ToGRPC(err)
