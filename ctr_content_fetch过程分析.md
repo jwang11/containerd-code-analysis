@@ -174,7 +174,7 @@ func Fetch(ctx context.Context, client *containerd.Client, ref string, config *F
 
 	log.G(pctx).WithField("image", ref).Debug("fetching")
 	labels := commands.LabelArgs(config.Labels)
--	// 这里定义了一组fetch相关的处理函数
+-	// 这里定义了一组fetch context相关的函数
 +	opts := []containerd.RemoteOpt{
 		containerd.WithPullLabels(labels),
 		containerd.WithResolver(config.Resolver),
@@ -213,14 +213,8 @@ func Fetch(ctx context.Context, client *containerd.Client, ref string, config *F
 func (c *Client) Fetch(ctx context.Context, ref string, opts ...RemoteOpt) (images.Image, error) {
 
 +	fetchCtx := defaultRemoteContext()
-- //				func defaultRemoteContext() *RemoteContext {
-- //					return &RemoteContext{
-- //						Resolver: docker.NewResolver(docker.ResolverOptions{
-- //						Client: http.DefaultClient,
-- //						}),
-- //					}
-- //				}
-	for _, o := range opts {
+-	// 把RemoteOpt数组里的函数执行一遍，修改fetchCtx
++	for _, o := range opts {
 		if err := o(c, fetchCtx); err != nil {
 			return images.Image{}, err
 		}
@@ -258,5 +252,121 @@ func (c *Client) Fetch(ctx context.Context, ref string, opts ...RemoteOpt) (imag
 		return images.Image{}, err
 	}
 	return c.createNewImage(ctx, img)
+}
+
+func defaultRemoteContext() *RemoteContext {
+	return &RemoteContext{
+		Resolver: docker.NewResolver(docker.ResolverOptions{
+			Client: http.DefaultClient,
+		}),
+	}
+}
+```
+
+- ***c.fetch(ctx, fetchCtx, ref, 0)***
+```diff
+func (c *Client) fetch(ctx context.Context, rCtx *RemoteContext, ref string, limit int) (images.Image, error) {
+	store := c.ContentStore()
+-	// 用resovler得到image ref的descriptor
++	name, desc, err := rCtx.Resolver.Resolve(ctx, ref)
+	if err != nil {
+		return images.Image{}, errors.Wrapf(err, "failed to resolve reference %q", ref)
+	}
+
+	fetcher, err := rCtx.Resolver.Fetcher(ctx, name)
+	if err != nil {
+		return images.Image{}, errors.Wrapf(err, "failed to get fetcher for %q", name)
+	}
+
+	var (
+		handler images.Handler
+
+		isConvertible bool
+		converterFunc func(context.Context, ocispec.Descriptor) (ocispec.Descriptor, error)
+		limiter       *semaphore.Weighted
+	)
+
+	if desc.MediaType == images.MediaTypeDockerSchema1Manifest && rCtx.ConvertSchema1 {
+		schema1Converter := schema1.NewConverter(store, fetcher)
+
+		handler = images.Handlers(append(rCtx.BaseHandlers, schema1Converter)...)
+
+		isConvertible = true
+
+		converterFunc = func(ctx context.Context, _ ocispec.Descriptor) (ocispec.Descriptor, error) {
+			return schema1Converter.Convert(ctx)
+		}
+	} else {
+		// Get all the children for a descriptor
+		childrenHandler := images.ChildrenHandler(store)
+		// Set any children labels for that content
+		childrenHandler = images.SetChildrenMappedLabels(store, childrenHandler, rCtx.ChildLabelMap)
+		if rCtx.AllMetadata {
+			// Filter manifests by platforms but allow to handle manifest
+			// and configuration for not-target platforms
+			childrenHandler = remotes.FilterManifestByPlatformHandler(childrenHandler, rCtx.PlatformMatcher)
+		} else {
+			// Filter children by platforms if specified.
+			childrenHandler = images.FilterPlatforms(childrenHandler, rCtx.PlatformMatcher)
+		}
+		// Sort and limit manifests if a finite number is needed
+		if limit > 0 {
+			childrenHandler = images.LimitManifests(childrenHandler, rCtx.PlatformMatcher, limit)
+		}
+
+		// set isConvertible to true if there is application/octet-stream media type
+		convertibleHandler := images.HandlerFunc(
+			func(_ context.Context, desc ocispec.Descriptor) ([]ocispec.Descriptor, error) {
+				if desc.MediaType == docker.LegacyConfigMediaType {
+					isConvertible = true
+				}
+
+				return []ocispec.Descriptor{}, nil
+			},
+		)
+
+		appendDistSrcLabelHandler, err := docker.AppendDistributionSourceLabel(store, ref)
+		if err != nil {
+			return images.Image{}, err
+		}
+
+		handlers := append(rCtx.BaseHandlers,
+			remotes.FetchHandler(store, fetcher),
+			convertibleHandler,
+			childrenHandler,
+			appendDistSrcLabelHandler,
+		)
+
+		handler = images.Handlers(handlers...)
+
+		converterFunc = func(ctx context.Context, desc ocispec.Descriptor) (ocispec.Descriptor, error) {
+			return docker.ConvertManifest(ctx, store, desc)
+		}
+	}
+
+	if rCtx.HandlerWrapper != nil {
+		handler = rCtx.HandlerWrapper(handler)
+	}
+
+	if rCtx.MaxConcurrentDownloads > 0 {
+		limiter = semaphore.NewWeighted(int64(rCtx.MaxConcurrentDownloads))
+	}
+
+-	// 开始并行下载所有的children
++	if err := images.Dispatch(ctx, handler, limiter, desc); err != nil {
+		return images.Image{}, err
+	}
+
+	if isConvertible {
+		if desc, err = converterFunc(ctx, desc); err != nil {
+			return images.Image{}, err
+		}
+	}
+
+	return images.Image{
+		Name:   name,
+		Target: desc,
+		Labels: rCtx.Labels,
+	}, nil
 }
 ```
