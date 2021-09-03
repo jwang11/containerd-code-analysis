@@ -174,7 +174,8 @@ func Fetch(ctx context.Context, client *containerd.Client, ref string, config *F
 
 	log.G(pctx).WithField("image", ref).Debug("fetching")
 	labels := commands.LabelArgs(config.Labels)
-	opts := []containerd.RemoteOpt{
+-	// 这里定义了一组fetch相关的处理函数
++	opts := []containerd.RemoteOpt{
 		containerd.WithPullLabels(labels),
 		containerd.WithResolver(config.Resolver),
 		containerd.WithImageHandler(h),
@@ -202,5 +203,60 @@ func Fetch(ctx context.Context, client *containerd.Client, ref string, config *F
 
 	<-progress
 	return img, nil
+}
+```
+
+- ***client.Fetch(pctx, ref, opts...)***
+```diff
+// Fetch downloads the provided content into containerd's content store
+// and returns a non-platform specific image reference
+func (c *Client) Fetch(ctx context.Context, ref string, opts ...RemoteOpt) (images.Image, error) {
+
++	fetchCtx := defaultRemoteContext()
+-	// func defaultRemoteContext() *RemoteContext {
+-		return &RemoteContext{
+-			Resolver: docker.NewResolver(docker.ResolverOptions{
+-			Client: http.DefaultClient,
+-			}),
+-		}
+-	}
+	for _, o := range opts {
+		if err := o(c, fetchCtx); err != nil {
+			return images.Image{}, err
+		}
+	}
+
+	if fetchCtx.Unpack {
+		return images.Image{}, errors.Wrap(errdefs.ErrNotImplemented, "unpack on fetch not supported, try pull")
+	}
+
+	if fetchCtx.PlatformMatcher == nil {
+		if len(fetchCtx.Platforms) == 0 {
+			fetchCtx.PlatformMatcher = platforms.All
+		} else {
+			var ps []ocispec.Platform
+			for _, s := range fetchCtx.Platforms {
+				p, err := platforms.Parse(s)
+				if err != nil {
+					return images.Image{}, errors.Wrapf(err, "invalid platform %s", s)
+				}
+				ps = append(ps, p)
+			}
+
+			fetchCtx.PlatformMatcher = platforms.Any(ps...)
+		}
+	}
+
+	ctx, done, err := c.WithLease(ctx)
+	if err != nil {
+		return images.Image{}, err
+	}
+	defer done(ctx)
+
+	img, err := c.fetch(ctx, fetchCtx, ref, 0)
+	if err != nil {
+		return images.Image{}, err
+	}
+	return c.createNewImage(ctx, img)
 }
 ```
