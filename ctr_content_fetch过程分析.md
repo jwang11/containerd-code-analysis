@@ -247,11 +247,11 @@ func (c *Client) Fetch(ctx context.Context, ref string, opts ...RemoteOpt) (imag
 	}
 	defer done(ctx)
 
-	img, err := c.fetch(ctx, fetchCtx, ref, 0)
++	img, err := c.fetch(ctx, fetchCtx, ref, 0)
 	if err != nil {
 		return images.Image{}, err
 	}
-	return c.createNewImage(ctx, img)
++	return c.createNewImage(ctx, img)
 }
 
 func defaultRemoteContext() *RemoteContext {
