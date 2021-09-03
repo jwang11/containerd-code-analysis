@@ -1,6 +1,5 @@
 # ctr_content_get过程分析
-> 针对命令行$ctr content get DIGEST的执行过程，进行代码分析<br>
-> DIGEST对象可以是manifest, config，layer blob
+> 针对命令行$ctr content get DIGEST的执行过程，进行代码分析。DIGEST对象可以是manifest, config，layer blob
 
 ### 命令行执行
 ```diff
@@ -18,7 +17,8 @@ layer-sha256:b82f7f888feb03d38fed4dad68d7265a8b276f1f0c543d549fc6ef30b42c00eb:  
 layer-sha256:b4d181a07f8025e00e0cb28f1cc14613da2ce26450b80c54aea537fa93cf3bda:    exists         |++++++++++++++++++++++++++++++++++++++|
 elapsed: 7.7 s                                                                    total:  25.4 M (3.3 MiB/s)
 
-- 用get获取index内容
+根据上面output的DIGEST信息，
+- 获取index内容
 $ ctr content get sha256:47ae43cdfc7064d28800bc42e79a429540c7c80168e8c8952778c0d5af1c09db|jq
 {
   "manifests": [
