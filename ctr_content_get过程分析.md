@@ -311,7 +311,7 @@ docker-entrypoint.d/30-tune-worker-processes.sh
 	}
 ```
 
-- *** client.ContentStore***
+- ***client.ContentStore***
 ```diff
 // ContentStore returns the underlying content Store
 func (c *Client) ContentStore() content.Store {
