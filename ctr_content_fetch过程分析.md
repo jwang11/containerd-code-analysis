@@ -213,13 +213,13 @@ func Fetch(ctx context.Context, client *containerd.Client, ref string, config *F
 func (c *Client) Fetch(ctx context.Context, ref string, opts ...RemoteOpt) (images.Image, error) {
 
 +	fetchCtx := defaultRemoteContext()
--	// func defaultRemoteContext() *RemoteContext {
--		return &RemoteContext{
--			Resolver: docker.NewResolver(docker.ResolverOptions{
--			Client: http.DefaultClient,
--			}),
--		}
--	}
+- //				func defaultRemoteContext() *RemoteContext {
+- //					return &RemoteContext{
+- //						Resolver: docker.NewResolver(docker.ResolverOptions{
+- //						Client: http.DefaultClient,
+- //						}),
+- //					}
+- //				}
 	for _, o := range opts {
 		if err := o(c, fetchCtx); err != nil {
 			return images.Image{}, err
