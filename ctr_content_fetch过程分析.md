@@ -730,8 +730,27 @@ func (c *Client) fetch(ctx context.Context, rCtx *RemoteContext, ref string, lim
 ```
 
 >> ***Resolver.Resolve***
+>> 
 ```diff
+// RegistryHost represents a complete configuration for a registry
+// host, representing the capabilities, authorizations, connection
+// configuration, and location.
+type RegistryHost struct {
+	Client       *http.Client
+	Authorizer   Authorizer
+	Host         string
+	Scheme       string
+	Path         string
+	Capabilities HostCapabilities
+	Header       http.Header
+}
+
 func (r *dockerResolver) Resolve(ctx context.Context, ref string) (string, ocispec.Descriptor, error) {
+-	// 以docker.io/library/nginx:latest为例，base = {
+-	// 		refspec:    {locator: "docker.io/library/nginx", object: "latest"}
+-	//		repository: "library/nginx",
+-	//		hosts:      []RegistryHost,
+-	//		header:     http.Header}
 	base, err := r.resolveDockerBase(ref)
 	if err != nil {
 		return "", ocispec.Descriptor{}, err
@@ -780,7 +799,8 @@ func (r *dockerResolver) Resolve(ctx context.Context, ref string) (string, ocisp
 		for _, host := range hosts {
 			ctx := log.WithLogger(ctx, log.G(ctx).WithField("host", host.Host))
 
-			req := base.request(host, http.MethodHead, u...)
+-			// 组装对repository的http请求
++			req := base.request(host, http.MethodHead, u...)
 			if err := req.addNamespace(base.refspec.Hostname()); err != nil {
 				return "", ocispec.Descriptor{}, err
 			}
@@ -790,7 +810,8 @@ func (r *dockerResolver) Resolve(ctx context.Context, ref string) (string, ocisp
 			}
 
 			log.G(ctx).Debug("resolving")
-			resp, err := req.doWithRetries(ctx, nil)
+-			// 向repo发请求，尝试一下manifests能不能取到			
++			resp, err := req.doWithRetries(ctx, nil)
 			if err != nil {
 				if errors.Is(err, ErrInvalidAuthorization) {
 					err = errors.Wrapf(err, "pull access denied, repository does not exist or may require authorization")
