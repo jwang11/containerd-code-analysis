@@ -105,7 +105,7 @@ type FetchConfig struct {
 
 // NewFetchConfig returns the default FetchConfig from cli flags
 func NewFetchConfig(ctx context.Context, clicontext *cli.Context) (*FetchConfig, error) {
--	// 建立一个Resolver
+-	// 根据option和系统环境建立一个Resolver，帮助从registry拉取image
 +	resolver, err := commands.GetResolver(ctx, clicontext)
 	if err != nil {
 		return nil, err
@@ -204,9 +204,264 @@ func GetResolver(ctx gocontext.Context, clicontext *cli.Context) (remotes.Resolv
 		}
 	}
 
-	options.Hosts = config.ConfigureHosts(ctx, hostOptions)
+-	// 根据hostOptions生成RegistryHost函数
++	options.Hosts = config.ConfigureHosts(ctx, hostOptions)
 
-	return docker.NewResolver(options), nil
+-	// 根据options生成Docker registry的resolver
++	return docker.NewResolver(options), nil
+}
+```
+
+>> ***NewFetchConfig -> GetResolver -> config.ConfigureHosts***
+```diff
+type hostConfig struct {
+	scheme string
+	host   string
+	path   string
+
+	capabilities docker.HostCapabilities
+
+	caCerts     []string
+	clientPairs [][2]string
+	skipVerify  *bool
+
+	header http.Header
+
+	// TODO: Add credential configuration (domain alias, username)
+}
+
+// RegistryHost represents a complete configuration for a registry
+// host, representing the capabilities, authorizations, connection
+// configuration, and location.
+type RegistryHost struct {
+	Client       *http.Client
+	Authorizer   Authorizer
+	Host         string
+	Scheme       string
+	Path         string
+	Capabilities HostCapabilities
+	Header       http.Header
+}
+
+// ConfigureHosts creates a registry hosts function from the provided
+// host creation options. The host directory can read hosts.toml or
+// certificate files laid out in the Docker specific layout.
+// If a `HostDir` function is not required, defaults are used.
+func ConfigureHosts(ctx context.Context, options HostOptions) docker.RegistryHosts {
+	return func(host string) ([]docker.RegistryHost, error) {
+		var hosts []hostConfig
+		if options.HostDir != nil {
+			dir, err := options.HostDir(host)
+			if err != nil && !errdefs.IsNotFound(err) {
+				return nil, err
+			}
+			if dir != "" {
+				log.G(ctx).WithField("dir", dir).Debug("loading host directory")
+				hosts, err = loadHostDir(ctx, dir)
+				if err != nil {
+					return nil, err
+				}
+			}
+		}
+
+		// If hosts was not set, add a default host
+		// NOTE: Check nil here and not empty, the host may be
+		// intentionally configured to not have any endpoints
+		if hosts == nil {
+			hosts = make([]hostConfig, 1)
+		}
+		if len(hosts) > 0 && hosts[len(hosts)-1].host == "" {
+			if host == "docker.io" {
+				hosts[len(hosts)-1].scheme = "https"
+				hosts[len(hosts)-1].host = "registry-1.docker.io"
+			} else {
+				hosts[len(hosts)-1].host = host
+				if options.DefaultScheme != "" {
+					hosts[len(hosts)-1].scheme = options.DefaultScheme
+				} else {
+					hosts[len(hosts)-1].scheme = "https"
+				}
+			}
+			hosts[len(hosts)-1].path = "/v2"
+			hosts[len(hosts)-1].capabilities = docker.HostCapabilityPull | docker.HostCapabilityResolve | docker.HostCapabilityPush
+		}
+
+		var defaultTLSConfig *tls.Config
+		if options.DefaultTLS != nil {
+			defaultTLSConfig = options.DefaultTLS
+		} else {
+			defaultTLSConfig = &tls.Config{}
+		}
+
+		defaultTransport := &http.Transport{
+			Proxy: http.ProxyFromEnvironment,
+			DialContext: (&net.Dialer{
+				Timeout:       30 * time.Second,
+				KeepAlive:     30 * time.Second,
+				FallbackDelay: 300 * time.Millisecond,
+			}).DialContext,
+			MaxIdleConns:          10,
+			IdleConnTimeout:       30 * time.Second,
+			TLSHandshakeTimeout:   10 * time.Second,
+			TLSClientConfig:       defaultTLSConfig,
+			ExpectContinueTimeout: 5 * time.Second,
+		}
+
+		client := &http.Client{
+			Transport: defaultTransport,
+		}
+		if options.UpdateClient != nil {
+			if err := options.UpdateClient(client); err != nil {
+				return nil, err
+			}
+		}
+
+		authOpts := []docker.AuthorizerOpt{docker.WithAuthClient(client)}
+		if options.Credentials != nil {
+			authOpts = append(authOpts, docker.WithAuthCreds(options.Credentials))
+		}
+		authorizer := docker.NewDockerAuthorizer(authOpts...)
+
+		rhosts := make([]docker.RegistryHost, len(hosts))
+		for i, host := range hosts {
+
+			rhosts[i].Scheme = host.scheme
+			rhosts[i].Host = host.host
+			rhosts[i].Path = host.path
+			rhosts[i].Capabilities = host.capabilities
+			rhosts[i].Header = host.header
+
+			if host.caCerts != nil || host.clientPairs != nil || host.skipVerify != nil {
+				tr := defaultTransport.Clone()
+				tlsConfig := tr.TLSClientConfig
+				if host.skipVerify != nil {
+					tlsConfig.InsecureSkipVerify = *host.skipVerify
+				}
+				if host.caCerts != nil {
+					if tlsConfig.RootCAs == nil {
+						rootPool, err := rootSystemPool()
+						if err != nil {
+							return nil, errors.Wrap(err, "unable to initialize cert pool")
+						}
+						tlsConfig.RootCAs = rootPool
+					}
+					for _, f := range host.caCerts {
+						data, err := ioutil.ReadFile(f)
+						if err != nil {
+							return nil, errors.Wrapf(err, "unable to read CA cert %q", f)
+						}
+						if !tlsConfig.RootCAs.AppendCertsFromPEM(data) {
+							return nil, errors.Errorf("unable to load CA cert %q", f)
+						}
+					}
+				}
+
+				if host.clientPairs != nil {
+					for _, pair := range host.clientPairs {
+						certPEMBlock, err := ioutil.ReadFile(pair[0])
+						if err != nil {
+							return nil, errors.Wrapf(err, "unable to read CERT file %q", pair[0])
+						}
+						var keyPEMBlock []byte
+						if pair[1] != "" {
+							keyPEMBlock, err = ioutil.ReadFile(pair[1])
+							if err != nil {
+								return nil, errors.Wrapf(err, "unable to read CERT file %q", pair[1])
+							}
+						} else {
+							// Load key block from same PEM file
+							keyPEMBlock = certPEMBlock
+						}
+						cert, err := tls.X509KeyPair(certPEMBlock, keyPEMBlock)
+						if err != nil {
+							return nil, errors.Wrap(err, "failed to load X509 key pair")
+						}
+
+						tlsConfig.Certificates = append(tlsConfig.Certificates, cert)
+					}
+				}
+
+				c := *client
+				c.Transport = tr
+				if options.UpdateClient != nil {
+					if err := options.UpdateClient(&c); err != nil {
+						return nil, err
+					}
+				}
+
+				rhosts[i].Client = &c
+				rhosts[i].Authorizer = docker.NewDockerAuthorizer(append(authOpts, docker.WithAuthClient(&c))...)
+			} else {
+				rhosts[i].Client = client
+				rhosts[i].Authorizer = authorizer
+			}
+		}
+
+		return rhosts, nil
+	}
+
+}
+```
+
+>> ***NewFetchConfig -> GetResolver -> docker.NewResolver***
+```
+// NewResolver returns a new resolver to a Docker registry
+func NewResolver(options ResolverOptions) remotes.Resolver {
+	if options.Tracker == nil {
+		options.Tracker = NewInMemoryTracker()
+	}
+
+	if options.Headers == nil {
+		options.Headers = make(http.Header)
+	}
+	if _, ok := options.Headers["User-Agent"]; !ok {
+		options.Headers.Set("User-Agent", "containerd/"+version.Version)
+	}
+
+	resolveHeader := http.Header{}
+	if _, ok := options.Headers["Accept"]; !ok {
+		// set headers for all the types we support for resolution.
+		resolveHeader.Set("Accept", strings.Join([]string{
+			images.MediaTypeDockerSchema2Manifest,
+			images.MediaTypeDockerSchema2ManifestList,
+			ocispec.MediaTypeImageManifest,
+			ocispec.MediaTypeImageIndex, "*/*"}, ", "))
+	} else {
+		resolveHeader["Accept"] = options.Headers["Accept"]
+		delete(options.Headers, "Accept")
+	}
+
+-	// 如果Hosts函数没有，就生成一个缺省的。
++	if options.Hosts == nil {
+		opts := []RegistryOpt{}
+		if options.Host != nil {
+			opts = append(opts, WithHostTranslator(options.Host))
+		}
+
+		if options.Authorizer == nil {
+			options.Authorizer = NewDockerAuthorizer(
+				WithAuthClient(options.Client),
+				WithAuthHeader(options.Headers),
+				WithAuthCreds(options.Credentials))
+		}
+		opts = append(opts, WithAuthorizer(options.Authorizer))
+
+		if options.Client != nil {
+			opts = append(opts, WithClient(options.Client))
+		}
+		if options.PlainHTTP {
+			opts = append(opts, WithPlainHTTP(MatchAllHosts))
+		} else {
+			opts = append(opts, WithPlainHTTP(MatchLocalhost))
+		}
++		options.Hosts = ConfigureDefaultRegistries(opts...)
+	}
+	return &dockerResolver{
+		hosts:         options.Hosts,
+		header:        options.Headers,
+		resolveHeader: resolveHeader,
+		tracker:       options.Tracker,
+	}
 }
 ```
 
@@ -313,6 +568,7 @@ func (c *Client) Fetch(ctx context.Context, ref string, opts ...RemoteOpt) (imag
 	}
 	defer done(ctx)
 
+-	// 正式开始fetch镜像
 +	img, err := c.fetch(ctx, fetchCtx, ref, 0)
 	if err != nil {
 		return images.Image{}, err
@@ -418,7 +674,7 @@ func (c *Client) fetch(ctx context.Context, rCtx *RemoteContext, ref string, lim
 		limiter = semaphore.NewWeighted(int64(rCtx.MaxConcurrentDownloads))
 	}
 
--	// 开始并行下载所有的children
+-	// 开始并行下载配置好的所有handler
 +	if err := images.Dispatch(ctx, handler, limiter, desc); err != nil {
 		return images.Image{}, err
 	}
