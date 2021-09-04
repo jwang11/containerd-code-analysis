@@ -587,6 +587,42 @@ func defaultRemoteContext() *RemoteContext {
 
 - ***c.fetch(ctx, fetchCtx, ref, 0)***
 ```diff
+// Descriptor describes the disposition of targeted content.
+// This structure provides `application/vnd.oci.descriptor.v1+json` mediatype
+// when marshalled to JSON.
+type Descriptor struct {
+	// MediaType is the media type of the object this schema refers to.
+	MediaType string `json:"mediaType,omitempty"`
+
+	// Digest is the digest of the targeted content.
+	Digest digest.Digest `json:"digest"`
+
+	// Size specifies the size in bytes of the blob.
+	Size int64 `json:"size"`
+
+	// URLs specifies a list of URLs from which this object MAY be downloaded
+	URLs []string `json:"urls,omitempty"`
+
+	// Annotations contains arbitrary metadata relating to the targeted content.
+	Annotations map[string]string `json:"annotations,omitempty"`
+
+	// Platform describes the platform which the image in the manifest runs on.
+	//
+	// This should only be used when referring to a manifest.
+	Platform *Platform `json:"platform,omitempty"`
+}
+
+func (r *dockerResolver) Fetcher(ctx context.Context, ref string) (remotes.Fetcher, error) {
+	base, err := r.resolveDockerBase(ref)
+	if err != nil {
+		return nil, err
+	}
+
+	return dockerFetcher{
+		dockerBase: base,
+	}, nil
+}
+
 func (c *Client) fetch(ctx context.Context, rCtx *RemoteContext, ref string, limit int) (images.Image, error) {
 	store := c.ContentStore()
 -	// 用resovler得到image ref的descriptor
@@ -595,7 +631,7 @@ func (c *Client) fetch(ctx context.Context, rCtx *RemoteContext, ref string, lim
 		return images.Image{}, errors.Wrapf(err, "failed to resolve reference %q", ref)
 	}
 
-	fetcher, err := rCtx.Resolver.Fetcher(ctx, name)
++	fetcher, err := rCtx.Resolver.Fetcher(ctx, name)
 	if err != nil {
 		return images.Image{}, errors.Wrapf(err, "failed to get fetcher for %q", name)
 	}
@@ -690,5 +726,315 @@ func (c *Client) fetch(ctx context.Context, rCtx *RemoteContext, ref string, lim
 		Target: desc,
 		Labels: rCtx.Labels,
 	}, nil
+}
+```
+
+>> ***Resolver.Resolve***
+```diff
+func (r *dockerResolver) Resolve(ctx context.Context, ref string) (string, ocispec.Descriptor, error) {
+	base, err := r.resolveDockerBase(ref)
+	if err != nil {
+		return "", ocispec.Descriptor{}, err
+	}
+	refspec := base.refspec
+	if refspec.Object == "" {
+		return "", ocispec.Descriptor{}, reference.ErrObjectRequired
+	}
+
+	var (
+		firstErr error
+		paths    [][]string
+		dgst     = refspec.Digest()
+		caps     = HostCapabilityPull
+	)
+
+	if dgst != "" {
+		if err := dgst.Validate(); err != nil {
+			// need to fail here, since we can't actually resolve the invalid
+			// digest.
+			return "", ocispec.Descriptor{}, err
+		}
+
+		// turns out, we have a valid digest, make a url.
+		paths = append(paths, []string{"manifests", dgst.String()})
+
+		// fallback to blobs on not found.
+		paths = append(paths, []string{"blobs", dgst.String()})
+	} else {
+		// Add
+		paths = append(paths, []string{"manifests", refspec.Object})
+		caps |= HostCapabilityResolve
+	}
+
+	hosts := base.filterHosts(caps)
+	if len(hosts) == 0 {
+		return "", ocispec.Descriptor{}, errors.Wrap(errdefs.ErrNotFound, "no resolve hosts")
+	}
+
+	ctx, err = ContextWithRepositoryScope(ctx, refspec, false)
+	if err != nil {
+		return "", ocispec.Descriptor{}, err
+	}
+
+	for _, u := range paths {
+		for _, host := range hosts {
+			ctx := log.WithLogger(ctx, log.G(ctx).WithField("host", host.Host))
+
+			req := base.request(host, http.MethodHead, u...)
+			if err := req.addNamespace(base.refspec.Hostname()); err != nil {
+				return "", ocispec.Descriptor{}, err
+			}
+
+			for key, value := range r.resolveHeader {
+				req.header[key] = append(req.header[key], value...)
+			}
+
+			log.G(ctx).Debug("resolving")
+			resp, err := req.doWithRetries(ctx, nil)
+			if err != nil {
+				if errors.Is(err, ErrInvalidAuthorization) {
+					err = errors.Wrapf(err, "pull access denied, repository does not exist or may require authorization")
+				}
+				// Store the error for referencing later
+				if firstErr == nil {
+					firstErr = err
+				}
+				log.G(ctx).WithError(err).Info("trying next host")
+				continue // try another host
+			}
+			resp.Body.Close() // don't care about body contents.
+
+			if resp.StatusCode > 299 {
+				if resp.StatusCode == http.StatusNotFound {
+					log.G(ctx).Info("trying next host - response was http.StatusNotFound")
+					continue
+				}
+				if resp.StatusCode > 399 {
+					// Set firstErr when encountering the first non-404 status code.
+					if firstErr == nil {
+						firstErr = errors.Errorf("pulling from host %s failed with status code %v: %v", host.Host, u, resp.Status)
+					}
+					continue // try another host
+				}
+				return "", ocispec.Descriptor{}, errors.Errorf("pulling from host %s failed with unexpected status code %v: %v", host.Host, u, resp.Status)
+			}
+			size := resp.ContentLength
+			contentType := getManifestMediaType(resp)
+
+			// if no digest was provided, then only a resolve
+			// trusted registry was contacted, in this case use
+			// the digest header (or content from GET)
+			if dgst == "" {
+				// this is the only point at which we trust the registry. we use the
+				// content headers to assemble a descriptor for the name. when this becomes
+				// more robust, we mostly get this information from a secure trust store.
+				dgstHeader := digest.Digest(resp.Header.Get("Docker-Content-Digest"))
+
+				if dgstHeader != "" && size != -1 {
+					if err := dgstHeader.Validate(); err != nil {
+						return "", ocispec.Descriptor{}, errors.Wrapf(err, "%q in header not a valid digest", dgstHeader)
+					}
+					dgst = dgstHeader
+				}
+			}
+			if dgst == "" || size == -1 {
+				log.G(ctx).Debug("no Docker-Content-Digest header, fetching manifest instead")
+
+				req = base.request(host, http.MethodGet, u...)
+				if err := req.addNamespace(base.refspec.Hostname()); err != nil {
+					return "", ocispec.Descriptor{}, err
+				}
+
+				for key, value := range r.resolveHeader {
+					req.header[key] = append(req.header[key], value...)
+				}
+
+				resp, err := req.doWithRetries(ctx, nil)
+				if err != nil {
+					return "", ocispec.Descriptor{}, err
+				}
+				defer resp.Body.Close()
+
+				bodyReader := countingReader{reader: resp.Body}
+
+				contentType = getManifestMediaType(resp)
+				if dgst == "" {
+					if contentType == images.MediaTypeDockerSchema1Manifest {
+						b, err := schema1.ReadStripSignature(&bodyReader)
+						if err != nil {
+							return "", ocispec.Descriptor{}, err
+						}
+
+						dgst = digest.FromBytes(b)
+					} else {
+						dgst, err = digest.FromReader(&bodyReader)
+						if err != nil {
+							return "", ocispec.Descriptor{}, err
+						}
+					}
+				} else if _, err := io.Copy(ioutil.Discard, &bodyReader); err != nil {
+					return "", ocispec.Descriptor{}, err
+				}
+				size = bodyReader.bytesRead
+			}
+			// Prevent resolving to excessively large manifests
+			if size > MaxManifestSize {
+				if firstErr == nil {
+					firstErr = errors.Wrapf(errdefs.ErrNotFound, "rejecting %d byte manifest for %s", size, ref)
+				}
+				continue
+			}
+
+			desc := ocispec.Descriptor{
+				Digest:    dgst,
+				MediaType: contentType,
+				Size:      size,
+			}
+
+			log.G(ctx).WithField("desc.digest", desc.Digest).Debug("resolved")
+			return ref, desc, nil
+		}
+	}
+
+	// If above loop terminates without return, then there was an error.
+	// "firstErr" contains the first non-404 error. That is, "firstErr == nil"
+	// means that either no registries were given or each registry returned 404.
+
+	if firstErr == nil {
+		firstErr = errors.Wrap(errdefs.ErrNotFound, ref)
+	}
+
+	return "", ocispec.Descriptor{}, firstErr
+}
+
+func (r *dockerResolver) resolveDockerBase(ref string) (*dockerBase, error) {
+	refspec, err := reference.Parse(ref)
+	if err != nil {
+		return nil, err
+	}
+
+	return r.base(refspec)
+}
+
+type dockerBase struct {
+	refspec    reference.Spec
+	repository string
+	hosts      []RegistryHost
+	header     http.Header
+}
+
+func (r *dockerResolver) base(refspec reference.Spec) (*dockerBase, error) {
+	host := refspec.Hostname()
+	hosts, err := r.hosts(host)
+	if err != nil {
+		return nil, err
+	}
+	return &dockerBase{
+		refspec:    refspec,
+		repository: strings.TrimPrefix(refspec.Locator, host+"/"),
+		hosts:      hosts,
+		header:     r.header,
+	}, nil
+}
+
+```
+
+>>> Reference Spec
+```
+// Spec defines the main components of a reference specification.
+//
+// A reference specification is a schema-less URI parsed into common
+// components. The two main components, locator and object, are required to be
+// supported by remotes. It represents a superset of the naming define in
+// docker's reference schema. It aims to be compatible but not prescriptive.
+//
+// While the interpretation of the components, locator and object, are up to
+// the remote, we define a few common parts, accessible via helper methods.
+//
+// The first is the hostname, which is part of the locator. This doesn't need
+// to map to a physical resource, but it must parse as a hostname. We refer to
+// this as the namespace.
+//
+// The other component made accessible by helper method is the digest. This is
+// part of the object identifier, always prefixed with an '@'. If present, the
+// remote may use the digest portion directly or resolve it against a prefix.
+// If the object does not include the `@` symbol, the return value for `Digest`
+// will be empty.
+type Spec struct {
+	// Locator is the host and path portion of the specification. The host
+	// portion may refer to an actual host or just a namespace of related
+	// images.
+	//
+	// Typically, the locator may used to resolve the remote to fetch specific
+	// resources.
+	Locator string
+
+	// Object contains the identifier for the remote resource. Classically,
+	// this is a tag but can refer to anything in a remote. By convention, any
+	// portion that may be a partial or whole digest will be preceded by an
+	// `@`. Anything preceding the `@` will be referred to as the "tag".
+	//
+	// In practice, we will see this broken down into the following formats:
+	//
+	// 1. <tag>
+	// 2. <tag>@<digest spec>
+	// 3. @<digest spec>
+	//
+	// We define the tag to be anything except '@' and ':'. <digest spec> may
+	// be a full valid digest or shortened version, possibly with elided
+	// algorithm.
+	Object string
+}
+
+var splitRe = regexp.MustCompile(`[:@]`)
+
+// Parse parses the string into a structured ref.
+func Parse(s string) (Spec, error) {
+	if strings.Contains(s, "://") {
+		return Spec{}, ErrInvalid
+	}
+
+	u, err := url.Parse("dummy://" + s)
+	if err != nil {
+		return Spec{}, err
+	}
+
+	if u.Scheme != "dummy" {
+		return Spec{}, ErrInvalid
+	}
+
+	if u.Host == "" {
+		return Spec{}, ErrHostnameRequired
+	}
+
+	var object string
+
+	if idx := splitRe.FindStringIndex(u.Path); idx != nil {
+		// This allows us to retain the @ to signify digests or shortened digests in
+		// the object.
+		object = u.Path[idx[0]:]
+		if object[:1] == ":" {
+			object = object[1:]
+		}
+		u.Path = u.Path[:idx[0]]
+	}
+
+	return Spec{
+		Locator: path.Join(u.Host, u.Path),
+		Object:  object,
+	}, nil
+}
+
+// Hostname returns the hostname portion of the locator.
+//
+// Remotes are not required to directly access the resources at this host. This
+// method is provided for convenience.
+func (r Spec) Hostname() string {
+	i := strings.Index(r.Locator, "/")
+
+	if i < 0 {
+		return r.Locator
+	}
+	return r.Locator[:i]
 }
 ```
