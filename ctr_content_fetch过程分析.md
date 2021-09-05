@@ -643,8 +643,8 @@ func (c *Client) fetch(ctx context.Context, rCtx *RemoteContext, ref string, lim
 		converterFunc func(context.Context, ocispec.Descriptor) (ocispec.Descriptor, error)
 		limiter       *semaphore.Weighted
 	)
-
-	if desc.MediaType == images.MediaTypeDockerSchema1Manifest && rCtx.ConvertSchema1 {
+-	// MediaTypeDockerSchema1Manifest = "application/vnd.docker.distribution.manifest.v1+prettyjws"
++	if desc.MediaType == images.MediaTypeDockerSchema1Manifest && rCtx.ConvertSchema1 {
 		schema1Converter := schema1.NewConverter(store, fetcher)
 
 		handler = images.Handlers(append(rCtx.BaseHandlers, schema1Converter)...)
