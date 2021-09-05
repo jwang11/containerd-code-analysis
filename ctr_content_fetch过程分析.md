@@ -862,7 +862,7 @@ func (r *dockerResolver) Resolve(ctx context.Context, ref string) (string, ocisp
 			if dgst == "" || size == -1 {
 				log.G(ctx).Debug("no Docker-Content-Digest header, fetching manifest instead")
 
-				req = base.request(host, http.MethodGet, u...)
++				req = base.request(host, http.MethodGet, u...)
 				if err := req.addNamespace(base.refspec.Hostname()); err != nil {
 					return "", ocispec.Descriptor{}, err
 				}
@@ -957,6 +957,30 @@ func (r *dockerResolver) base(refspec reference.Spec) (*dockerBase, error) {
 		hosts:      hosts,
 		header:     r.header,
 	}, nil
+}
+
+func (r *dockerBase) request(host RegistryHost, method string, ps ...string) *request {
+	header := r.header.Clone()
+	if header == nil {
+		header = http.Header{}
+	}
+
+	for key, value := range host.Header {
+		header[key] = append(header[key], value...)
+	}
+-	// parts=/v2/library/nginx/manifests/latest@digest
++	parts := append([]string{"/", host.Path, r.repository}, ps...)
+	p := path.Join(parts...)
+	// Join strips trailing slash, re-add ending "/" if included
+	if len(parts) > 0 && strings.HasSuffix(parts[len(parts)-1], "/") {
+		p = p + "/"
+	}
+	return &request{
+		method: method,
+		path:   p,
+		header: header,
+		host:   host,
+	}
 }
 
 ```
