@@ -695,7 +695,8 @@ func (c *Client) fetch(ctx context.Context, rCtx *RemoteContext, ref string, lim
 +			appendDistSrcLabelHandler,
 		)
 
-		handler = images.Handlers(handlers...)
+-		// 把所有handlers串起来，生成一个总handler
++		handler = images.Handlers(handlers...)
 
 		converterFunc = func(ctx context.Context, desc ocispec.Descriptor) (ocispec.Descriptor, error) {
 			return docker.ConvertManifest(ctx, store, desc)
