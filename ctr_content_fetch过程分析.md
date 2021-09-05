@@ -534,7 +534,7 @@ func Fetch(ctx context.Context, client *containerd.Client, ref string, config *F
 func (c *Client) Fetch(ctx context.Context, ref string, opts ...RemoteOpt) (images.Image, error) {
 
 +	fetchCtx := defaultRemoteContext()
--	// 把RemoteOpt数组里的函数执行一遍，修改fetchCtx
+-	// 把RemoteOpt数组里的函数执行一遍，修改client，fetchCtx
 +	for _, o := range opts {
 		if err := o(c, fetchCtx); err != nil {
 			return images.Image{}, err
