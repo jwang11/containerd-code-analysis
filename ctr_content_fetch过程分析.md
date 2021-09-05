@@ -749,7 +749,8 @@ func (r *dockerResolver) Resolve(ctx context.Context, ref string) (string, ocisp
 -	// 以docker.io/library/nginx:latest为例，base = {
 -	// 		refspec:    {locator: "docker.io/library/nginx", object: "latest"}
 -	//		repository: "library/nginx",
--	//		hosts:      []RegistryHost,
+-	//		hosts:      []RegistryHost{path: "/v2", host: "registry-1.docker.io", scheme: "https", 
+-	//                                         capabilities: docker.HostCapabilityPull | docker.HostCapabilityResolve | docker.HostCapabilityPush
 -	//		header:     http.Header}
 	base, err := r.resolveDockerBase(ref)
 	if err != nil {
