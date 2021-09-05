@@ -689,10 +689,10 @@ func (c *Client) fetch(ctx context.Context, rCtx *RemoteContext, ref string, lim
 		}
 
 		handlers := append(rCtx.BaseHandlers,
-			remotes.FetchHandler(store, fetcher),
-			convertibleHandler,
-			childrenHandler,
-			appendDistSrcLabelHandler,
++			remotes.FetchHandler(store, fetcher),
++			convertibleHandler,
++			childrenHandler,
++			appendDistSrcLabelHandler,
 		)
 
 		handler = images.Handlers(handlers...)
@@ -710,7 +710,7 @@ func (c *Client) fetch(ctx context.Context, rCtx *RemoteContext, ref string, lim
 		limiter = semaphore.NewWeighted(int64(rCtx.MaxConcurrentDownloads))
 	}
 
--	// 开始并行下载配置好的所有handler
+-	// 运行配置好的handlers，包括content的下载
 +	if err := images.Dispatch(ctx, handler, limiter, desc); err != nil {
 		return images.Image{}, err
 	}
@@ -1082,5 +1082,187 @@ func (r Spec) Hostname() string {
 		return r.Locator
 	}
 	return r.Locator[:i]
+}
+```
+
+- FetchHandler是负责fetch所有的content，并且把它们放进content store
+```diff
+// FetchHandler returns a handler that will fetch all content into the ingester
+// discovered in a call to Dispatch. Use with ChildrenHandler to do a full
+// recursive fetch.
+func FetchHandler(ingester content.Ingester, fetcher Fetcher) images.HandlerFunc {
+	return func(ctx context.Context, desc ocispec.Descriptor) (subdescs []ocispec.Descriptor, err error) {
+		ctx = log.WithLogger(ctx, log.G(ctx).WithFields(logrus.Fields{
+			"digest":    desc.Digest,
+			"mediatype": desc.MediaType,
+			"size":      desc.Size,
+		}))
+
+		switch desc.MediaType {
+		case images.MediaTypeDockerSchema1Manifest:
+			return nil, fmt.Errorf("%v not supported", desc.MediaType)
+		default:
+			err := fetch(ctx, ingester, fetcher, desc)
+			return nil, err
+		}
+	}
+}
+```
+
+>> ***FetchHandler -> fetch***
+```diff
+func fetch(ctx context.Context, ingester content.Ingester, fetcher Fetcher, desc ocispec.Descriptor) error {
+	log.G(ctx).Debug("fetch")
+
+	cw, err := content.OpenWriter(ctx, ingester, content.WithRef(MakeRefKey(ctx, desc)), content.WithDescriptor(desc))
+	if err != nil {
+		if errdefs.IsAlreadyExists(err) {
+			return nil
+		}
+		return err
+	}
+	defer cw.Close()
+
+	ws, err := cw.Status()
+	if err != nil {
+		return err
+	}
+
+	if desc.Size == 0 {
+		// most likely a poorly configured registry/web front end which responded with no
+		// Content-Length header; unable (not to mention useless) to commit a 0-length entry
+		// into the content store. Error out here otherwise the error sent back is confusing
+		return errors.Wrapf(errdefs.ErrInvalidArgument, "unable to fetch descriptor (%s) which reports content size of zero", desc.Digest)
+	}
+	if ws.Offset == desc.Size {
+		// If writer is already complete, commit and return
+		err := cw.Commit(ctx, desc.Size, desc.Digest)
+		if err != nil && !errdefs.IsAlreadyExists(err) {
+			return errors.Wrapf(err, "failed commit on ref %q", ws.Ref)
+		}
+		return nil
+	}
+
+	rc, err := fetcher.Fetch(ctx, desc)
+	if err != nil {
+		return err
+	}
+	defer rc.Close()
+
+	return content.Copy(ctx, cw, rc, desc.Size, desc.Digest)
+}
+```
+
+>> ***FetchHandler -> fetch -> fetcher.Fetch***
+```diff
+func (r dockerFetcher) Fetch(ctx context.Context, desc ocispec.Descriptor) (io.ReadCloser, error) {
+	ctx = log.WithLogger(ctx, log.G(ctx).WithField("digest", desc.Digest))
+
+	hosts := r.filterHosts(HostCapabilityPull)
+	if len(hosts) == 0 {
+		return nil, errors.Wrap(errdefs.ErrNotFound, "no pull hosts")
+	}
+
+	ctx, err := ContextWithRepositoryScope(ctx, r.refspec, false)
+	if err != nil {
+		return nil, err
+	}
+
+	return newHTTPReadSeeker(desc.Size, func(offset int64) (io.ReadCloser, error) {
+		// firstly try fetch via external urls
+		for _, us := range desc.URLs {
+			ctx = log.WithLogger(ctx, log.G(ctx).WithField("url", us))
+
+			u, err := url.Parse(us)
+			if err != nil {
+				log.G(ctx).WithError(err).Debug("failed to parse")
+				continue
+			}
+			log.G(ctx).Debug("trying alternative url")
+
+			// Try this first, parse it
+			host := RegistryHost{
+				Client:       http.DefaultClient,
+				Host:         u.Host,
+				Scheme:       u.Scheme,
+				Path:         u.Path,
+				Capabilities: HostCapabilityPull,
+			}
+			req := r.request(host, http.MethodGet)
+			// Strip namespace from base
+			req.path = u.Path
+			if u.RawQuery != "" {
+				req.path = req.path + "?" + u.RawQuery
+			}
+
+			rc, err := r.open(ctx, req, desc.MediaType, offset)
+			if err != nil {
+				if errdefs.IsNotFound(err) {
+					continue // try one of the other urls.
+				}
+
+				return nil, err
+			}
+
+			return rc, nil
+		}
+
+		// Try manifests endpoints for manifests types
+		switch desc.MediaType {
+		case images.MediaTypeDockerSchema2Manifest, images.MediaTypeDockerSchema2ManifestList,
+			images.MediaTypeDockerSchema1Manifest,
+			ocispec.MediaTypeImageManifest, ocispec.MediaTypeImageIndex:
+
+			var firstErr error
+			for _, host := range r.hosts {
+				req := r.request(host, http.MethodGet, "manifests", desc.Digest.String())
+				if err := req.addNamespace(r.refspec.Hostname()); err != nil {
+					return nil, err
+				}
+
+				rc, err := r.open(ctx, req, desc.MediaType, offset)
+				if err != nil {
+					// Store the error for referencing later
+					if firstErr == nil {
+						firstErr = err
+					}
+					continue // try another host
+				}
+
+				return rc, nil
+			}
+
+			return nil, firstErr
+		}
+
+		// Finally use blobs endpoints
+		var firstErr error
+		for _, host := range r.hosts {
+			req := r.request(host, http.MethodGet, "blobs", desc.Digest.String())
+			if err := req.addNamespace(r.refspec.Hostname()); err != nil {
+				return nil, err
+			}
+
+			rc, err := r.open(ctx, req, desc.MediaType, offset)
+			if err != nil {
+				// Store the error for referencing later
+				if firstErr == nil {
+					firstErr = err
+				}
+				continue // try another host
+			}
+
+			return rc, nil
+		}
+
+		if errdefs.IsNotFound(firstErr) {
+			firstErr = errors.Wrapf(errdefs.ErrNotFound,
+				"could not fetch content descriptor %v (%v) from remote",
+				desc.Digest, desc.MediaType)
+		}
+
+		return nil, firstErr
+
+	})
 }
 ```
