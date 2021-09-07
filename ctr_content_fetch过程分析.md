@@ -20,7 +20,7 @@ elapsed: 7.7 s                                                                  
 
 ### [命令入口](https://github.com/containerd/containerd/blob/main/cmd/ctr/commands/content/fetch.go)
 ```diff
-- 该命令的作用是把image所有相关资源从仓库拉下来，并把config转换成runtime格式。
+- 该命令的作用是把image所有相关资源从仓库拉下来，存到content store里。
 ```
 ```diff
 var fetchCommand = cli.Command{
@@ -83,6 +83,10 @@ Most of this is experimental and there are few leaps to make this work.`,
 
 > ***NewFetchConfig***
 ```diff
+- 构建FetchConfig作为fetch的配置，
+```
+
+```diff
 // FetchConfig for content fetch
 type FetchConfig struct {
 	// Resolver
@@ -98,10 +102,14 @@ type FetchConfig struct {
 	// Whether or not download all metadata
 	AllMetadata bool
 	// RemoteOpts to configure object resolutions and transfers with remote content providers
-	RemoteOpts []containerd.RemoteOpt
++	RemoteOpts []containerd.RemoteOpt
 	// TraceHTTP writes DNS and connection information to the log when dealing with a container registry
 	TraceHTTP bool
 }
+
++ RemoeteOpts是对RemoteContext的修改函数
+// RemoteOpt allows the caller to set distribution options for a remote
+type RemoteOpt func(*Client, *RemoteContext) error
 
 // NewFetchConfig returns the default FetchConfig from cli flags
 func NewFetchConfig(ctx context.Context, clicontext *cli.Context) (*FetchConfig, error) {
