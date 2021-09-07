@@ -113,7 +113,7 @@ type RemoteOpt func(*Client, *RemoteContext) error
 
 // NewFetchConfig returns the default FetchConfig from cli flags
 func NewFetchConfig(ctx context.Context, clicontext *cli.Context) (*FetchConfig, error) {
--	// 根据option和系统环境建立一个Resolver，帮助从registry拉取image
+-	// 根据option和系统环境建立一个Resolver，解析镜像registry的地址
 +	resolver, err := commands.GetResolver(ctx, clicontext)
 	if err != nil {
 		return nil, err
@@ -144,15 +144,33 @@ func NewFetchConfig(ctx context.Context, clicontext *cli.Context) (*FetchConfig,
 
 	if clicontext.IsSet("max-concurrent-downloads") {
 		mcd := clicontext.Int("max-concurrent-downloads")
-		config.RemoteOpts = append(config.RemoteOpts, containerd.WithMaxConcurrentDownloads(mcd))
+-		// 设置RemoteContext.MaxConcurrentDownloads = max的函数		
++		config.RemoteOpts = append(config.RemoteOpts, containerd.WithMaxConcurrentDownloads(mcd))
 	}
 
 	if clicontext.IsSet("max-concurrent-uploaded-layers") {
 		mcu := clicontext.Int("max-concurrent-uploaded-layers")
-		config.RemoteOpts = append(config.RemoteOpts, containerd.WithMaxConcurrentUploadedLayers(mcu))
+-		// 设置RemoteContext.MaxConcurrentUploadedLayers = max的函数
++		config.RemoteOpts = append(config.RemoteOpts, containerd.WithMaxConcurrentUploadedLayers(mcu))
 	}
 
 	return config, nil
+}
+
+// WithMaxConcurrentDownloads sets max concurrent download limit.
+func WithMaxConcurrentDownloads(max int) RemoteOpt {
+	return func(client *Client, c *RemoteContext) error {
+		c.MaxConcurrentDownloads = max
+		return nil
+	}
+}
+
+// WithMaxConcurrentUploadedLayers sets max concurrent uploaded layer limit.
+func WithMaxConcurrentUploadedLayers(max int) RemoteOpt {
+	return func(client *Client, c *RemoteContext) error {
+		c.MaxConcurrentUploadedLayers = max
+		return nil
+	}
 }
 ```
 > ***NewFetchConfig -> GetResolver***
@@ -165,7 +183,9 @@ func GetResolver(ctx gocontext.Context, clicontext *cli.Context) (remotes.Resolv
 		secret = username[i+1:]
 		username = username[0:i]
 	}
-	options := docker.ResolverOptions{
+	
+-	// 定义ResolveOptions，目的是帮助生成Resolver
++	options := docker.ResolverOptions{
 		Tracker: PushTracker,
 	}
 	if username != "" {
@@ -184,7 +204,8 @@ func GetResolver(ctx gocontext.Context, clicontext *cli.Context) (remotes.Resolv
 		secret = rt
 	}
 
-	hostOptions := config.HostOptions{}
+-	// 定义HostOptions帮助产生RegistryHost函数，该函数可以产生一系列可能的registry host地址
++	hostOptions := config.HostOptions{}
 	hostOptions.Credentials = func(host string) (string, string, error) {
 		// If host doesn't match...
 		// Only one host
@@ -212,10 +233,10 @@ func GetResolver(ctx gocontext.Context, clicontext *cli.Context) (remotes.Resolv
 		}
 	}
 
--	// 根据hostOptions生成RegistryHost函数
+-	// 根据hostOptions生成ResolveOptions.hosts函数
 +	options.Hosts = config.ConfigureHosts(ctx, hostOptions)
 
--	// 根据options生成Docker registry的resolver
+-	// 根据ResolveOptions生成Docker registry的resolver
 +	return docker.NewResolver(options), nil
 }
 ```
@@ -440,7 +461,7 @@ func NewResolver(options ResolverOptions) remotes.Resolver {
 	}
 
 -	// 如果Hosts函数没有，就生成一个缺省的。
-+	if options.Hosts == nil {
+	if options.Hosts == nil {
 		opts := []RegistryOpt{}
 		if options.Host != nil {
 			opts = append(opts, WithHostTranslator(options.Host))
@@ -462,9 +483,9 @@ func NewResolver(options ResolverOptions) remotes.Resolver {
 		} else {
 			opts = append(opts, WithPlainHTTP(MatchLocalhost))
 		}
-+		options.Hosts = ConfigureDefaultRegistries(opts...)
+		options.Hosts = ConfigureDefaultRegistries(opts...)
 	}
-	return &dockerResolver{
++	return &dockerResolver{
 		hosts:         options.Hosts,
 		header:        options.Headers,
 		resolveHeader: resolveHeader,
@@ -494,7 +515,8 @@ func Fetch(ctx context.Context, client *containerd.Client, ref string, config *F
 		close(progress)
 	}()
 
-	h := images.HandlerFunc(func(ctx context.Context, desc ocispec.Descriptor) ([]ocispec.Descriptor, error) {
+-	// handler函数，fetch最后要调用
++	h := images.HandlerFunc(func(ctx context.Context, desc ocispec.Descriptor) ([]ocispec.Descriptor, error) {
 		if desc.MediaType != images.MediaTypeDockerSchema1Manifest {
 			ongoing.Add(desc)
 		}
@@ -503,7 +525,7 @@ func Fetch(ctx context.Context, client *containerd.Client, ref string, config *F
 
 	log.G(pctx).WithField("image", ref).Debug("fetching")
 	labels := commands.LabelArgs(config.Labels)
--	// 这里定义了一组fetch context相关的函数
+-	// 这里定义了一组修改FetchContext的函数
 +	opts := []containerd.RemoteOpt{
 		containerd.WithPullLabels(labels),
 		containerd.WithResolver(config.Resolver),
@@ -719,7 +741,7 @@ func (c *Client) fetch(ctx context.Context, rCtx *RemoteContext, ref string, lim
 		limiter = semaphore.NewWeighted(int64(rCtx.MaxConcurrentDownloads))
 	}
 
--	// 运行配置好的handlers，包括content的下载
+-	// 运行配置好的handlers，包括content的下载，这是一个递归函数，把所有manifest里的children资源都下载
 +	if err := images.Dispatch(ctx, handler, limiter, desc); err != nil {
 		return images.Image{}, err
 	}
@@ -1094,7 +1116,7 @@ func (r Spec) Hostname() string {
 }
 ```
 
-- FetchHandler是负责fetch所有的content，并且把它们放进content store
+- ***FetchHandler是负责fetch所有的content，并且把它们放进content store***
 ```diff
 // FetchHandler returns a handler that will fetch all content into the ingester
 // discovered in a call to Dispatch. Use with ChildrenHandler to do a full
