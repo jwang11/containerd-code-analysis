@@ -677,7 +677,8 @@ func (c *Client) fetch(ctx context.Context, rCtx *RemoteContext, ref string, lim
 +	if desc.MediaType == images.MediaTypeDockerSchema1Manifest && rCtx.ConvertSchema1 {
 		schema1Converter := schema1.NewConverter(store, fetcher)
 
-		handler = images.Handlers(append(rCtx.BaseHandlers, schema1Converter)...)
+-		// fetch处理函数包含在schema1Converter.handle函数里面
++		handler = images.Handlers(append(rCtx.BaseHandlers, schema1Converter)...)
 
 		isConvertible = true
 
@@ -757,6 +758,46 @@ func (c *Client) fetch(ctx context.Context, rCtx *RemoteContext, ref string, lim
 		Target: desc,
 		Labels: rCtx.Labels,
 	}, nil
+}
+```
+
+- ***Dispatch***
+```
+func Dispatch(ctx context.Context, handler Handler, limiter *semaphore.Weighted, descs ...ocispec.Descriptor) error {
+	eg, ctx2 := errgroup.WithContext(ctx)
+	for _, desc := range descs {
+		desc := desc
+
+		if limiter != nil {
+			if err := limiter.Acquire(ctx, 1); err != nil {
+				return err
+			}
+		}
+
+		eg.Go(func() error {
+			desc := desc
+
++			children, err := handler.Handle(ctx2, desc)
+			if limiter != nil {
+				limiter.Release(1)
+			}
+			if err != nil {
+				if errors.Is(err, ErrSkipDesc) {
+					return nil // don't traverse the children.
+				}
+				return err
+			}
+
+			if len(children) > 0 {
+-				// 递归下载manifest里的children资源（descriptor）			
++				return Dispatch(ctx2, handler, limiter, children...)
+			}
+
+			return nil
+		})
+	}
+
+	return eg.Wait()
 }
 ```
 
