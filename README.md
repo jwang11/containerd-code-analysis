@@ -10,8 +10,8 @@ Analyze source code structure of [containerd project](https://github.com/contain
 - container服务
 - Runtime服务
 - Task服务
-- 代码路径ctr_run_image
-- 代码路径ctr_pull_image
+- ctr_content_fetch_image
+- ctr_image_pull过程分析
 
 ### 流程图
 ![containerd代码流程](containerd_run_code.png)
