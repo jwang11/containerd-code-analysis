@@ -153,8 +153,8 @@ command. As part of this process, we do the following:
 			fmt.Printf("unpacking %s %s...\n", platforms.Format(platform), img.Target.Digest)
 -     // 生成一个client image      
 +			i := containerd.NewImageWithPlatform(client, img, platforms.Only(platform))
--     // 把image unpack到snapshotter
-+      err = i.Unpack(ctx, context.String("snapshotter"))
+-     			// 把image unpack到snapshotter
++      			err = i.Unpack(ctx, context.String("snapshotter"))
 			if err != nil {
 				return err
 			}
@@ -269,4 +269,35 @@ func (i *image) Unpack(ctx context.Context, snapshotterName string, opts ...Unpa
 	_, err = cs.Update(ctx, cinfo, fmt.Sprintf("labels.containerd.io/gc.ref.snapshot.%s", snapshotterName))
 	return err
 }
+
+func (i *image) getManifest(ctx context.Context, platform platforms.MatchComparer) (ocispec.Manifest, error) {
+	cs := i.ContentStore()
+	manifest, err := images.Manifest(ctx, cs, i.i.Target, platform)
+	if err != nil {
+		return ocispec.Manifest{}, err
+	}
+	return manifest, nil
+}
+
+func (i *image) getLayers(ctx context.Context, platform platforms.MatchComparer, manifest ocispec.Manifest) ([]rootfs.Layer, error) {
+	cs := i.ContentStore()
+	diffIDs, err := i.i.RootFS(ctx, cs, platform)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to resolve rootfs")
+	}
+	if len(diffIDs) != len(manifest.Layers) {
+		return nil, errors.Errorf("mismatched image rootfs and manifest layers")
+	}
+	layers := make([]rootfs.Layer, len(diffIDs))
+	for i := range diffIDs {
+		layers[i].Diff = ocispec.Descriptor{
+			// TODO: derive media type from compressed type
+			MediaType: ocispec.MediaTypeImageLayer,
+			Digest:    diffIDs[i],
+		}
+		layers[i].Blob = manifest.Layers[i]
+	}
+	return layers, nil
+}
+
 ```
