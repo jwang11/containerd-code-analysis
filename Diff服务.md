@@ -54,7 +54,7 @@ func (s *service) Diff(ctx context.Context, dr *diffapi.DiffRequest) (*diffapi.D
 }
 ```
 
-### 内部服务services.DiffService
+### [内部服务](https://github.com/containerd/containerd/blob/main/services/diff/local.go)
 ```diff
 func init() {
 	plugin.Register(&plugin.Registration{
