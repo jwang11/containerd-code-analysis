@@ -74,3 +74,56 @@ func initCRIService(ic *plugin.InitContext) (interface{}, error) {
 	return s, nil
 }
 ```
+
+### CRI Service
+```diff
+// NewCRIService returns a new instance of CRIService
+func NewCRIService(config criconfig.Config, client *containerd.Client) (CRIService, error) {
+	var err error
+	labels := label.NewStore()
+	c := &criService{
+		config:             config,
+		client:             client,
+		os:                 osinterface.RealOS{},
+		sandboxStore:       sandboxstore.NewStore(labels),
+		containerStore:     containerstore.NewStore(labels),
+		imageStore:         imagestore.NewStore(client),
+		snapshotStore:      snapshotstore.NewStore(),
+		sandboxNameIndex:   registrar.NewRegistrar(),
+		containerNameIndex: registrar.NewRegistrar(),
+		initialized:        atomic.NewBool(false),
+	}
+
+	if client.SnapshotService(c.config.ContainerdConfig.Snapshotter) == nil {
+		return nil, errors.Errorf("failed to find snapshotter %q", c.config.ContainerdConfig.Snapshotter)
+	}
+
+	c.imageFSPath = imageFSPath(config.ContainerdRootDir, config.ContainerdConfig.Snapshotter)
+	logrus.Infof("Get image filesystem path %q", c.imageFSPath)
+
+	if err := c.initPlatform(); err != nil {
+		return nil, errors.Wrap(err, "initialize platform")
+	}
+
+	// prepare streaming server
+	c.streamServer, err = newStreamServer(c, config.StreamServerAddress, config.StreamServerPort, config.StreamIdleTimeout)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to create stream server")
+	}
+
+	c.eventMonitor = newEventMonitor(c)
+
+	c.cniNetConfMonitor, err = newCNINetConfSyncer(c.config.NetworkPluginConfDir, c.netPlugin, c.cniLoadOptions())
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to create cni conf monitor")
+	}
+
+	// Preload base OCI specs
+	c.baseOCISpecs, err = loadBaseOCISpecs(&config)
+	if err != nil {
+		return nil, err
+	}
+
+	return c, nil
+}
+```
