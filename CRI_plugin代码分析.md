@@ -44,7 +44,8 @@ func initCRIService(ic *plugin.InitContext) (interface{}, error) {
 		return nil, errors.Wrap(err, "failed to set glog level")
 	}
 
-	servicesOpts, err := getServicesOpts(ic)
+-	// 因为是建立一个新的server，它map了一大批依赖服务，
++	servicesOpts, err := getServicesOpts(ic)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to get services")
 	}
@@ -60,7 +61,7 @@ func initCRIService(ic *plugin.InitContext) (interface{}, error) {
 		return nil, errors.Wrap(err, "failed to create containerd client")
 	}
 
-	s, err := server.NewCRIService(c, client)
++	s, err := server.NewCRIService(c, client)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to create CRI service")
 	}
@@ -94,11 +95,11 @@ func NewCRIService(config criconfig.Config, client *containerd.Client) (CRIServi
 		initialized:        atomic.NewBool(false),
 	}
 
-	if client.SnapshotService(c.config.ContainerdConfig.Snapshotter) == nil {
++	if client.SnapshotService(c.config.ContainerdConfig.Snapshotter) == nil {
 		return nil, errors.Errorf("failed to find snapshotter %q", c.config.ContainerdConfig.Snapshotter)
 	}
 
-	c.imageFSPath = imageFSPath(config.ContainerdRootDir, config.ContainerdConfig.Snapshotter)
++	c.imageFSPath = imageFSPath(config.ContainerdRootDir, config.ContainerdConfig.Snapshotter)
 	logrus.Infof("Get image filesystem path %q", c.imageFSPath)
 
 	if err := c.initPlatform(); err != nil {
@@ -106,14 +107,14 @@ func NewCRIService(config criconfig.Config, client *containerd.Client) (CRIServi
 	}
 
 	// prepare streaming server
-	c.streamServer, err = newStreamServer(c, config.StreamServerAddress, config.StreamServerPort, config.StreamIdleTimeout)
++	c.streamServer, err = newStreamServer(c, config.StreamServerAddress, config.StreamServerPort, config.StreamIdleTimeout)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to create stream server")
 	}
 
 	c.eventMonitor = newEventMonitor(c)
 
-	c.cniNetConfMonitor, err = newCNINetConfSyncer(c.config.NetworkPluginConfDir, c.netPlugin, c.cniLoadOptions())
++	c.cniNetConfMonitor, err = newCNINetConfSyncer(c.config.NetworkPluginConfDir, c.netPlugin, c.cniLoadOptions())
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to create cni conf monitor")
 	}
