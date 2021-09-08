@@ -1,7 +1,7 @@
 # Diff服务
 > Diff 服务计算上层/下层 mount 目录的差异，遵从 OCI 规范 Changesets (变化集)打包 tar diff 镜像层存储。Apply 接口将ocispec.Descriptor的content放至指定的挂载目录。
 
-### [外部服务]（https://github.com/containerd/containerd/blob/main/services/diff/service.go）
+### [外部服务](https://github.com/containerd/containerd/blob/main/services/diff/service.go)
 ```diff
 func init() {
 	plugin.Register(&plugin.Registration{
@@ -30,7 +30,7 @@ func init() {
 }
 ```
 
-- ***外部服务接口***
+> ***外部服务接口实现***
 ```diff
 type service struct {
 	local diffapi.DiffClient
@@ -97,7 +97,7 @@ func init() {
 }
 ```
 
-- ***内部服务接口***
+> ***内部服务接口实现***
 ```diff
 type local struct {
 	differs []differ
@@ -251,7 +251,7 @@ type Applier interface {
 }
 ```
 
-- ***底层服务接口实现***
+> ***底层服务接口实现***
 ```diff
 - // walkingDiff实现Comparer接口
 // NewWalkingDiff is a generic implementation of diff.Comparer.  The diff is
@@ -468,7 +468,7 @@ func (s *fsApplier) Apply(ctx context.Context, desc ocispec.Descriptor, mounts [
 		r: io.TeeReader(processor, digester.Hash()),
 	}
 
-	if err := apply(ctx, mounts, rc); err != nil {
++	if err := apply(ctx, mounts, rc); err != nil {
 		return emptyDesc, err
 	}
 
@@ -491,5 +491,54 @@ func (s *fsApplier) Apply(ctx context.Context, desc ocispec.Descriptor, mounts [
 		Size:      rc.c,
 		Digest:    digester.Digest(),
 	}, nil
+}
+```
+> ***apply***Linux实现
+```diff
+func apply(ctx context.Context, mounts []mount.Mount, r io.Reader) error {
+	switch {
+	case len(mounts) == 1 && mounts[0].Type == "overlay":
+		// OverlayConvertWhiteout (mknod c 0 0) doesn't work in userns.
+		// https://github.com/containerd/containerd/issues/3762
+		if userns.RunningInUserNS() {
+			break
+		}
+		path, parents, err := getOverlayPath(mounts[0].Options)
+		if err != nil {
+			if errdefs.IsInvalidArgument(err) {
+				break
+			}
+			return err
+		}
+		opts := []archive.ApplyOpt{
+			archive.WithConvertWhiteout(archive.OverlayConvertWhiteout),
+		}
+		if len(parents) > 0 {
+			opts = append(opts, archive.WithParents(parents))
+		}
+-		// 解压tar文件		
++		_, err = archive.Apply(ctx, path, r, opts...)
+		return err
+	case len(mounts) == 1 && mounts[0].Type == "aufs":
+		path, parents, err := getAufsPath(mounts[0].Options)
+		if err != nil {
+			if errdefs.IsInvalidArgument(err) {
+				break
+			}
+			return err
+		}
+		opts := []archive.ApplyOpt{
+			archive.WithConvertWhiteout(archive.AufsConvertWhiteout),
+		}
+		if len(parents) > 0 {
+			opts = append(opts, archive.WithParents(parents))
+		}
+		_, err = archive.Apply(ctx, path, r, opts...)
+		return err
+	}
+	return mount.WithTempMount(ctx, mounts, func(root string) error {
+		_, err := archive.Apply(ctx, root, r)
+		return err
+	})
 }
 ```
