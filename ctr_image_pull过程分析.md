@@ -215,7 +215,8 @@ func (i *image) Unpack(ctx context.Context, snapshotterName string, opts ...Unpa
 		chain    []digest.Digest
 		unpacked bool
 	)
-	snapshotterName, err = i.client.resolveSnapshotterName(ctx, snapshotterName)
+-	// 如果没有指定snapshotter，使用缺省的	
++	snapshotterName, err = i.client.resolveSnapshotterName(ctx, snapshotterName)
 	if err != nil {
 		return err
 	}
@@ -269,7 +270,9 @@ func (i *image) Unpack(ctx context.Context, snapshotterName string, opts ...Unpa
 	_, err = cs.Update(ctx, cinfo, fmt.Sprintf("labels.containerd.io/gc.ref.snapshot.%s", snapshotterName))
 	return err
 }
-
+```
+>> getManifest
+```diff
 func (i *image) getManifest(ctx context.Context, platform platforms.MatchComparer) (ocispec.Manifest, error) {
 	cs := i.ContentStore()
 	manifest, err := images.Manifest(ctx, cs, i.i.Target, platform)
@@ -278,7 +281,9 @@ func (i *image) getManifest(ctx context.Context, platform platforms.MatchCompare
 	}
 	return manifest, nil
 }
-
+```
+>> getLayers
+```diff
 func (i *image) getLayers(ctx context.Context, platform platforms.MatchComparer, manifest ocispec.Manifest) ([]rootfs.Layer, error) {
 	cs := i.ContentStore()
 	diffIDs, err := i.i.RootFS(ctx, cs, platform)
@@ -299,5 +304,106 @@ func (i *image) getLayers(ctx context.Context, platform platforms.MatchComparer,
 	}
 	return layers, nil
 }
+```
 
+- ***ApplyLayerWithOpts***
+```diff
+// ApplyLayerWithOpts applies a single layer on top of the given provided layer chain,
+// using the provided snapshotter, applier, and apply opts. If the layer was unpacked true
+// is returned, if the layer already exists false is returned.
+func ApplyLayerWithOpts(ctx context.Context, layer Layer, chain []digest.Digest, sn snapshots.Snapshotter, a diff.Applier, opts []snapshots.Opt, applyOpts []diff.ApplyOpt) (bool, error) {
+	var (
+		chainID = identity.ChainID(append(chain, layer.Diff.Digest)).String()
+		applied bool
+	)
+-	// 如果chainID代表的layer在snapshoter里面没有，就生成一个	
+	if _, err := sn.Stat(ctx, chainID); err != nil {
+		if !errdefs.IsNotFound(err) {
+			return false, errors.Wrapf(err, "failed to stat snapshot %s", chainID)
+		}
+
++		if err := applyLayers(ctx, []Layer{layer}, append(chain, layer.Diff.Digest), sn, a, opts, applyOpts); err != nil {
+			if !errdefs.IsAlreadyExists(err) {
+				return false, err
+			}
+		} else {
+			applied = true
+		}
+	}
+	return applied, nil
+
+}
+```
+
+- ***applylayers***
+```diff
+- 在snapshotter里增加Layer分三步，prepare，apply和commit
+```
+```diff
+func applyLayers(ctx context.Context, layers []Layer, chain []digest.Digest, sn snapshots.Snapshotter, a diff.Applier, opts []snapshots.Opt, applyOpts []diff.ApplyOpt) error {
+	var (
+		parent  = identity.ChainID(chain[:len(chain)-1])
+		chainID = identity.ChainID(chain)
+		layer   = layers[len(layers)-1]
+		diff    ocispec.Descriptor
+		key     string
+		mounts  []mount.Mount
+		err     error
+	)
+
+	for {
+		key = fmt.Sprintf(snapshots.UnpackKeyFormat, uniquePart(), chainID)
+
+		// Prepare snapshot with from parent, label as root
++		mounts, err = sn.Prepare(ctx, key, parent.String(), opts...)
+		if err != nil {
+			if errdefs.IsNotFound(err) && len(layers) > 1 {
+				if err := applyLayers(ctx, layers[:len(layers)-1], chain[:len(chain)-1], sn, a, opts, applyOpts); err != nil {
+					if !errdefs.IsAlreadyExists(err) {
+						return err
+					}
+				}
+				// Do no try applying layers again
+				layers = nil
+				continue
+			} else if errdefs.IsAlreadyExists(err) {
+				// Try a different key
+				continue
+			}
+
+			// Already exists should have the caller retry
+			return errors.Wrapf(err, "failed to prepare extraction snapshot %q", key)
+
+		}
+		break
+	}
+	defer func() {
+		if err != nil {
+			if !errdefs.IsAlreadyExists(err) {
+				log.G(ctx).WithError(err).WithField("key", key).Infof("apply failure, attempting cleanup")
+			}
+
+			if rerr := sn.Remove(ctx, key); rerr != nil {
+				log.G(ctx).WithError(rerr).WithField("key", key).Warnf("extraction snapshot removal failed")
+			}
+		}
+	}()
+
++	diff, err = a.Apply(ctx, layer.Blob, mounts, applyOpts...)
+	if err != nil {
+		err = errors.Wrapf(err, "failed to extract layer %s", layer.Diff.Digest)
+		return err
+	}
+	if diff.Digest != layer.Diff.Digest {
+		err = errors.Errorf("wrong diff id calculated on extraction %q", diff.Digest)
+		return err
+	}
+
++	if err = sn.Commit(ctx, chainID.String(), key, opts...); err != nil {
+		err = errors.Wrapf(err, "failed to commit snapshot %s", key)
+		return err
+	}
+
+	return nil
+}
 ```
