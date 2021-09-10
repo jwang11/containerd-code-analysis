@@ -142,6 +142,23 @@ func getServicesOpts(ic *plugin.InitContext) ([]containerd.ServicesOpt, error) {
 
 ### NewCRIService
 ```diff
+- criService是整个CRI plugin的处理核心，它实现了一堆接口，包括RuntimeServiceServer和ImageServiceServer
+// grpcServices are all the grpc services provided by cri containerd.
+type grpcServices interface {
+	runtime.RuntimeServiceServer
+	runtime.ImageServiceServer
+}
+
+// CRIService is the interface implement CRI remote service server.
+type CRIService interface {
+	Run() error
+	// io.Closer is used by containerd to gracefully stop cri service.
+	io.Closer
+	plugin.Service
+	grpcServices
+}
+```
+```diff
 // NewCRIService returns a new instance of CRIService
 func NewCRIService(config criconfig.Config, client *containerd.Client) (CRIService, error) {
 	var err error
@@ -279,7 +296,7 @@ func loadBaseOCISpecs(config *criconfig.Config) (map[string]*oci.Spec, error) {
 }
 ```
 
-### CRI run
+### 启动CRI服务
 ```diff
 // Run starts the CRI service.
 func (c *criService) Run() error {
