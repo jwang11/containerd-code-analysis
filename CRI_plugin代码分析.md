@@ -67,7 +67,7 @@ func initCRIService(ic *plugin.InitContext) (interface{}, error) {
 	}
 
 	go func() {
-		if err := s.Run(); err != nil {
++		if err := s.Run(); err != nil {
 			log.G(ctx).WithError(err).Fatal("Failed to run CRI service")
 		}
 		// TODO(random-liu): Whether and how we can stop containerd.
@@ -76,7 +76,7 @@ func initCRIService(ic *plugin.InitContext) (interface{}, error) {
 }
 ```
 
-### CRI Service
+### NewCRIService
 ```diff
 // NewCRIService returns a new instance of CRIService
 func NewCRIService(config criconfig.Config, client *containerd.Client) (CRIService, error) {
@@ -102,7 +102,7 @@ func NewCRIService(config criconfig.Config, client *containerd.Client) (CRIServi
 +	c.imageFSPath = imageFSPath(config.ContainerdRootDir, config.ContainerdConfig.Snapshotter)
 	logrus.Infof("Get image filesystem path %q", c.imageFSPath)
 
-	if err := c.initPlatform(); err != nil {
++	if err := c.initPlatform(); err != nil {
 		return nil, errors.Wrap(err, "initialize platform")
 	}
 
@@ -120,11 +120,191 @@ func NewCRIService(config criconfig.Config, client *containerd.Client) (CRIServi
 	}
 
 	// Preload base OCI specs
-	c.baseOCISpecs, err = loadBaseOCISpecs(&config)
++	c.baseOCISpecs, err = loadBaseOCISpecs(&config)
 	if err != nil {
 		return nil, err
 	}
 
 	return c, nil
+}
+```
+> ***c.initPlatform***
+```
+// initPlatform handles linux specific initialization for the CRI service.
+func (c *criService) initPlatform() error {
+	var err error
+
+	if userns.RunningInUserNS() {
+		if !(c.config.DisableCgroup && !c.apparmorEnabled() && c.config.RestrictOOMScoreAdj) {
+			logrus.Warn("Running containerd in a user namespace typically requires disable_cgroup, disable_apparmor, restrict_oom_score_adj set to be true")
+		}
+	}
+
+	if c.config.EnableSelinux {
+		if !selinux.GetEnabled() {
+			logrus.Warn("Selinux is not supported")
+		}
+		if r := c.config.SelinuxCategoryRange; r > 0 {
+			selinux.CategoryRange = uint32(r)
+		}
+	} else {
+		selinux.SetDisabled()
+	}
+
+	// Pod needs to attach to at least loopback network and a non host network,
+	// hence networkAttachCount is 2. If there are more network configs the
+	// pod will be attached to all the networks but we will only use the ip
+	// of the default network interface as the pod IP.
+	c.netPlugin, err = cni.New(cni.WithMinNetworkCount(networkAttachCount),
+		cni.WithPluginConfDir(c.config.NetworkPluginConfDir),
+		cni.WithPluginMaxConfNum(c.config.NetworkPluginMaxConfNum),
+		cni.WithPluginDir([]string{c.config.NetworkPluginBinDir}))
+	if err != nil {
+		return errors.Wrap(err, "failed to initialize cni")
+	}
+
+	if c.allCaps == nil {
+		c.allCaps, err = cap.Current()
+		if err != nil {
+			return errors.Wrap(err, "failed to get caps")
+		}
+	}
+
+	return nil
+}
+```
+
+> ***loadBaseOCISpecs***
+```diff
+func loadOCISpec(filename string) (*oci.Spec, error) {
+	file, err := os.Open(filename)
+	if err != nil {
+		return nil, errors.Wrapf(err, "failed to open base OCI spec: %s", filename)
+	}
+	defer file.Close()
+
+	spec := oci.Spec{}
+	if err := json.NewDecoder(file).Decode(&spec); err != nil {
+		return nil, errors.Wrap(err, "failed to parse base OCI spec file")
+	}
+
+	return &spec, nil
+}
+
+func loadBaseOCISpecs(config *criconfig.Config) (map[string]*oci.Spec, error) {
+	specs := map[string]*oci.Spec{}
+	for _, cfg := range config.Runtimes {
+		if cfg.BaseRuntimeSpec == "" {
+			continue
+		}
+
+		// Don't load same file twice
+		if _, ok := specs[cfg.BaseRuntimeSpec]; ok {
+			continue
+		}
+
+		spec, err := loadOCISpec(cfg.BaseRuntimeSpec)
+		if err != nil {
+			return nil, errors.Wrapf(err, "failed to load base OCI spec from file: %s", cfg.BaseRuntimeSpec)
+		}
+
+		specs[cfg.BaseRuntimeSpec] = spec
+	}
+
+	return specs, nil
+}
+```
+
+### CRI run
+```diff
+// Run starts the CRI service.
+func (c *criService) Run() error {
+	logrus.Info("Start subscribing containerd event")
+	c.eventMonitor.subscribe(c.client)
+
+	logrus.Infof("Start recovering state")
+	if err := c.recover(ctrdutil.NamespacedContext()); err != nil {
+		return errors.Wrap(err, "failed to recover state")
+	}
+
+	// Start event handler.
+	logrus.Info("Start event monitor")
+	eventMonitorErrCh := c.eventMonitor.start()
+
+	// Start snapshot stats syncer, it doesn't need to be stopped.
+	logrus.Info("Start snapshots syncer")
+	snapshotsSyncer := newSnapshotsSyncer(
+		c.snapshotStore,
+		c.client.SnapshotService(c.config.ContainerdConfig.Snapshotter),
+		time.Duration(c.config.StatsCollectPeriod)*time.Second,
+	)
+	snapshotsSyncer.start()
+
+	// Start CNI network conf syncer
+	logrus.Info("Start cni network conf syncer")
+	cniNetConfMonitorErrCh := make(chan error, 1)
+	go func() {
+		defer close(cniNetConfMonitorErrCh)
+		cniNetConfMonitorErrCh <- c.cniNetConfMonitor.syncLoop()
+	}()
+
+	// Start streaming server.
+	logrus.Info("Start streaming server")
+	streamServerErrCh := make(chan error)
+	go func() {
+		defer close(streamServerErrCh)
+		if err := c.streamServer.Start(true); err != nil && err != http.ErrServerClosed {
+			logrus.WithError(err).Error("Failed to start streaming server")
+			streamServerErrCh <- err
+		}
+	}()
+
+	// Set the server as initialized. GRPC services could start serving traffic.
+	c.initialized.Set()
+
+	var eventMonitorErr, streamServerErr, cniNetConfMonitorErr error
+	// Stop the whole CRI service if any of the critical service exits.
+	select {
+	case eventMonitorErr = <-eventMonitorErrCh:
+	case streamServerErr = <-streamServerErrCh:
+	case cniNetConfMonitorErr = <-cniNetConfMonitorErrCh:
+	}
+	if err := c.Close(); err != nil {
+		return errors.Wrap(err, "failed to stop cri service")
+	}
+	// If the error is set above, err from channel must be nil here, because
+	// the channel is supposed to be closed. Or else, we wait and set it.
+	if err := <-eventMonitorErrCh; err != nil {
+		eventMonitorErr = err
+	}
+	logrus.Info("Event monitor stopped")
+	// There is a race condition with http.Server.Serve.
+	// When `Close` is called at the same time with `Serve`, `Close`
+	// may finish first, and `Serve` may still block.
+	// See https://github.com/golang/go/issues/20239.
+	// Here we set a 2 second timeout for the stream server wait,
+	// if it timeout, an error log is generated.
+	// TODO(random-liu): Get rid of this after https://github.com/golang/go/issues/20239
+	// is fixed.
+	const streamServerStopTimeout = 2 * time.Second
+	select {
+	case err := <-streamServerErrCh:
+		if err != nil {
+			streamServerErr = err
+		}
+		logrus.Info("Stream server stopped")
+	case <-time.After(streamServerStopTimeout):
+		logrus.Errorf("Stream server is not stopped in %q", streamServerStopTimeout)
+	}
+	if eventMonitorErr != nil {
+		return errors.Wrap(eventMonitorErr, "event monitor error")
+	}
+	if streamServerErr != nil {
+		return errors.Wrap(streamServerErr, "stream server error")
+	}
+	if cniNetConfMonitorErr != nil {
+		return errors.Wrap(cniNetConfMonitorErr, "cni network conf monitor error")
+	}
+	return nil
 }
 ```
