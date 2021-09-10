@@ -140,7 +140,7 @@ func getServicesOpts(ic *plugin.InitContext) ([]containerd.ServicesOpt, error) {
 }
 ```
 
-### NewCRIService
+### NewCRIService生成criService
 ```diff
 - criService是整个CRI plugin的处理核心，它实现了一堆接口，包括RuntimeServiceServer和ImageServiceServer
 // grpcServices are all the grpc services provided by cri containerd.
