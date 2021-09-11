@@ -74,6 +74,7 @@ func init() {
 
 +			db := m.(*metadata.DB)
 			return &local{
+-				// 在metadata的db基础上，实现container store
 				Store:     metadata.NewContainerStore(db),
 -				// metadata的db其实是bolt数据库加content-store				
 				db:        db,
@@ -235,9 +236,9 @@ func (l *local) withStoreUpdate(ctx context.Context, fn func(ctx context.Context
 
 ```
 
-### Container底层服务的实现
+### Container底层服务
 - metadta.NewContainerStore
-```
+```diff
 // NewContainerStore returns a Store backed by an underlying bolt DB
 func NewContainerStore(db *DB) containers.Store {
 	return &containerStore{
