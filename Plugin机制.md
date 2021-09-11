@@ -565,7 +565,7 @@ func Graph(filter DisableFilter) (ordered []*Registration) {
 		required    = make(map[string]struct{})
 	)
 
-+	// 这里plugins其实是Registration
+-	// 这里plugins其实是Registration
 	for _, p := range plugins {
 		id := p.URI()
 		reqID := id
@@ -575,7 +575,7 @@ func Graph(filter DisableFilter) (ordered []*Registration) {
 		log.G(ctx).WithField("type", p.Type).Infof("loading plugin %q...", id)
 
 -		// 生成initContext
-+		initContext := plugin.NewContext(
+		initContext := plugin.NewContext(
 			ctx,
 			p,
 -			// 已经初始化完成的plugins			
