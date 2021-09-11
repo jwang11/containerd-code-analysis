@@ -1,13 +1,33 @@
 # Container服务
 > container服务提供对container的运行管理
 
-### Container外部服务GPRC Plugin的注册
-[services/containers/service.go](https://github.com/containerd/containerd/blob/main/services/containers/service.go)
 ```
+NAME:
+   ctr containers - manage containers
+
+USAGE:
+   ctr containers command [command options] [arguments...]
+
+COMMANDS:
+   create           create container
+   delete, del, rm  delete one or more existing containers
+   info             get info about a container
+   list, ls         list containers
+   label            set and clear labels for a container
+   checkpoint       checkpoint a container
+   restore          restore a container from checkpoint
+
+OPTIONS:
+   --help, -h  show help
+```
+
+### Container外部服务
+[services/containers/service.go](https://github.com/containerd/containerd/blob/main/services/containers/service.go)
+```diff
 func init() {
 	plugin.Register(&plugin.Registration{
-		Type: plugin.GRPCPlugin,
-		ID:   "containers",
++		Type: plugin.GRPCPlugin,
++		ID:   "containers",
 		Requires: []plugin.Type{
 			plugin.ServicePlugin,
 		},
@@ -16,6 +36,7 @@ func init() {
 			if err != nil {
 				return nil, err
 			}
+-			// 依赖内部服务services.ContainersService			
 			p, ok := plugins[services.ContainersService]
 			if !ok {
 				return nil, errors.New("containers service not found")
@@ -30,17 +51,18 @@ func init() {
 }
 ```
 
-### Container内部服务ServicePlugin的注册
-```
+### Container内部服务
+```diff
 func init() {
 	plugin.Register(&plugin.Registration{
-		Type: plugin.ServicePlugin,
-		ID:   services.ContainersService,
++		Type: plugin.ServicePlugin,
++		ID:   services.ContainersService,
 		Requires: []plugin.Type{
 			plugin.EventPlugin,
 			plugin.MetadataPlugin,
 		},
 		InitFn: func(ic *plugin.InitContext) (interface{}, error) {
+-			// 依赖底层服务MetadataPlugin
 			m, err := ic.Get(plugin.MetadataPlugin)
 			if err != nil {
 				return nil, err
@@ -50,9 +72,10 @@ func init() {
 				return nil, err
 			}
 
-			db := m.(*metadata.DB)
++			db := m.(*metadata.DB)
 			return &local{
 				Store:     metadata.NewContainerStore(db),
+-				// metadata的db其实是bolt数据库加content-store				
 				db:        db,
 				publisher: ep.(events.Publisher),
 			}, nil
@@ -66,8 +89,9 @@ type local struct {
 	publisher events.Publisher
 }
 ```
-### Container内部服务DevicePlugin的实现
-```
+
+### Container内部服务
+```diff
 func (l *local) Get(ctx context.Context, req *api.GetContainerRequest, _ ...grpc.CallOption) (*api.GetContainerResponse, error) {
 	var resp api.GetContainerResponse
 
