@@ -332,7 +332,7 @@ func New(ctx context.Context, config *srvconfig.Config) (*Server, error) {
 		timeout.Set(key, d)
 	}
 -	// 注册plugin
-+	plugins, err := LoadPlugins(ctx, config)
+	plugins, err := LoadPlugins(ctx, config)
 	if err != nil {
 		return nil, err
 	}
@@ -561,7 +561,7 @@ func Graph(filter DisableFilter) (ordered []*Registration) {
 		// TODO: Remove this in 2.0 and let event plugin crease it
 		events      = exchange.NewExchange()
 -		// 收集完成初始化的plugins
-+		initialized = plugin.NewPluginSet()
+		initialized = plugin.NewPluginSet()
 		required    = make(map[string]struct{})
 	)
 
@@ -579,7 +579,7 @@ func Graph(filter DisableFilter) (ordered []*Registration) {
 			ctx,
 			p,
 -			// 已经初始化完成的plugins			
-+			initialized,
+			initialized,
 			config.Root,
 			config.State,
 		)
@@ -596,13 +596,13 @@ func Graph(filter DisableFilter) (ordered []*Registration) {
 			initContext.Config = pc
 		}
 -		// Init后，返回Plugin类型对象		
-+		result := p.Init(initContext)
+		result := p.Init(initContext)
 -		// 把plugin按照类型和ID，加入Set
-+		if err := initialized.Add(result); err != nil {
+		if err := initialized.Add(result); err != nil {
 			return nil, errors.Wrapf(err, "could not add plugin result to plugin set")
 		}
 -		// instance里放的是plugin需要输出的service
-+		instance, err := result.Instance()
+		instance, err := result.Instance()
 ...
 
 		delete(required, reqID)
@@ -617,6 +617,6 @@ func Graph(filter DisableFilter) (ordered []*Registration) {
 			tcpServices = append(tcpServices, service)
 		}
 -		// 把完成初始化的plugin加到Server.plugins
-+		s.plugins = append(s.plugins, result)
+		s.plugins = append(s.plugins, result)
 	}
 ```
