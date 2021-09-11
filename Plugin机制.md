@@ -407,7 +407,7 @@ func New(ctx context.Context, config *srvconfig.Config) (*Server, error) {
 	}
 
 -	// 初始化plugin
-+	for _, p := range plugins {
+	for _, p := range plugins {
 		id := p.URI()
 		reqID := id
 		if config.GetVersion() == 1 {
