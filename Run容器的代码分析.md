@@ -408,7 +408,7 @@ func NewContainer(ctx gocontext.Context, client *containerd.Client, context *cli
 			opts = append(opts, oci.WithCPUCFS(quota, period))
 		}
 
--		// 设置加入指定的namespace，格式是tpe: path
+-		// 设置加入指定的namespace，格式是type: path
 		joinNs := context.StringSlice("with-ns")
 		for _, ns := range joinNs {
 			parts := strings.Split(ns, ":")
@@ -459,6 +459,7 @@ func NewContainer(ctx gocontext.Context, client *containerd.Client, context *cli
 		}
 	}
 
+-	// 获得runc的options，包括runc的命令名，root路径和systemdcgroup
 	runtimeOpts, err := getRuntimeOptions(context)
 	if err != nil {
 		return nil, err
@@ -477,6 +478,7 @@ func NewContainer(ctx gocontext.Context, client *containerd.Client, context *cli
 +	return client.NewContainer(ctx, id, cOpts...)
 }
 ```
+
 - 转入client.NewContainer
 ```diff 
 // NewContainer will create a new container in container with the provided id
@@ -487,7 +489,7 @@ func (c *Client) NewContainer(ctx context.Context, id string, opts ...NewContain
 		return nil, err
 	}
 	defer done(ctx)
-+	// api/services/containers/v1/containers.pb.go(工具生成）
+-	// api/services/containers/v1/containers.pb.go(工具生成）
 	container := containers.Container{
 		ID: id,
 		Runtime: containers.RuntimeInfo{
@@ -506,16 +508,20 @@ func (c *Client) NewContainer(ctx context.Context, id string, opts ...NewContain
 	}
 	return containerFromRecord(c, r), nil
 }
-```
-```
-// RuntimeInfo holds runtime specific information
-type RuntimeInfo struct {
-	Name    string
-	Options *types.Any
+
+func containerFromRecord(client *Client, c containers.Container) *container {
+	return &container{
+		client:   client,
+		id:       c.ID,
+		metadata: c,
+	}
 }
 ```
 
 - newTask创建run container的任务
+```diff
++		task, err := tasks.NewTask(ctx, client, container, context.String("checkpoint"), con, context.Bool("null-io"), context.String("log-uri"), ioOpts, opts...)
+```
 ```diff
 func NewTask(ctx gocontext.Context, client *containerd.Client, container containerd.Container, checkpoint string, con console.Console, nullIO bool, logURI string, ioOpts []cio.Opt, opts ...containerd.NewTaskOpts) (containerd.Task, error) {
 	stdinC := &stdinCloser{
@@ -528,6 +534,7 @@ func NewTask(ctx gocontext.Context, client *containerd.Client, container contain
 		}
 		opts = append(opts, containerd.WithTaskCheckpoint(im))
 	}
+-	// 根据命令行参数，创建ioCreaator闭包，处理终端stdin/stdout/stderr	
 	var ioCreator cio.Creator
 	if con != nil {
 		if nullIO {
@@ -545,6 +552,7 @@ func NewTask(ctx gocontext.Context, client *containerd.Client, container contain
 	} else {
 		ioCreator = cio.NewCreator(append([]cio.Opt{cio.WithStreams(stdinC, os.Stdout, os.Stderr)}, ioOpts...)...)
 	}
+
 +	t, err := container.NewTask(ctx, ioCreator, opts...)
 	if err != nil {
 		return nil, err
@@ -670,6 +678,7 @@ func (c *container) NewTask(ctx context.Context, ioCreate cio.Creator, opts ...N
 - task.start
 ```
 func (t *task) Start(ctx context.Context) error {
+-	// 调用服务器端task servce的Start
 	r, err := t.client.TaskService().Start(ctx, &tasks.StartRequest{
 		ContainerID: t.id,
 	})
