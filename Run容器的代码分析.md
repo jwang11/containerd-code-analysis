@@ -244,11 +244,12 @@ func NewContainer(ctx gocontext.Context, client *containerd.Client, context *cli
 		opts = append(opts, oci.WithSpecFromFile(context.String("config")))
 	} else {
 		var (
-+			// image名字
+-			// 完整地image refence，如docker.io/library/busybox:latest
 			ref = context.Args().First()
 			//for container's id is Args[1]
 			args = context.Args()[2:]
 		)
+-		// 设置缺省的spec和devices
 		opts = append(opts, oci.WithDefaultSpec(), oci.WithDefaultUnixDevices)
 		if ef := context.String("env-file"); ef != "" {
 			opts = append(opts, oci.WithEnvFile(ef))
@@ -444,8 +445,8 @@ func NewContainer(ctx gocontext.Context, client *containerd.Client, context *cli
 
 	opts = append(opts, oci.WithAnnotations(commands.LabelArgs(context.StringSlice("label"))))
 	var s specs.Spec
-+	// 运行所有opts里定义的update spec操作，然后给container设置spec	
-+	spec = containerd.WithSpec(&s, opts...)
+	// 生成一个新的spec闭包，它会apply所有opts里定义的操作	
+	spec = containerd.WithSpec(&s, opts...)
 
 	cOpts = append(cOpts, spec)
 
@@ -476,8 +477,8 @@ func (c *Client) NewContainer(ctx context.Context, id string, opts ...NewContain
 			return nil, err
 		}
 	}
-+	// 调用Container外部服务的Create方法    
-+	r, err := c.ContainerService().Create(ctx, container)
+-	// 调用Container外部服务的Create方法    
+	r, err := c.ContainerService().Create(ctx, container)
 	if err != nil {
 		return nil, err
 	}
