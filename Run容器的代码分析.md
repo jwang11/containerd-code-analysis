@@ -256,7 +256,7 @@ func NewContainer(ctx gocontext.Context, client *containerd.Client, context *cli
 		}
 		opts = append(opts, oci.WithEnv(context.StringSlice("env")))
 		opts = append(opts, withMounts(context))
-
+-		// 如果命令选项有--rootfs，ref就是本地rootfs的目录，否则ref是registry的地址，如docker.io/library/busybox:latest
 		if context.Bool("rootfs") {
 			rootfs, err := filepath.Abs(ref)
 			if err != nil {
@@ -280,6 +280,7 @@ func NewContainer(ctx gocontext.Context, client *containerd.Client, context *cli
 				image = containerd.NewImage(client, i)
 			}
 
+-			// 如果image还没有unpack到snapshotter里，就执行unpack
 			unpacked, err := image.IsUnpacked(ctx, snapshotter)
 			if err != nil {
 				return nil, err
@@ -293,6 +294,7 @@ func NewContainer(ctx gocontext.Context, client *containerd.Client, context *cli
 			cOpts = append(cOpts,
 				containerd.WithImage(image),
 				containerd.WithSnapshotter(snapshotter))
+-			// 解析命令行提供的uidmap和gidmap				
 			if uidmap, gidmap := context.String("uidmap"), context.String("gidmap"); uidmap != "" && gidmap != "" {
 				uidMap, err := parseIDMapping(uidmap)
 				if err != nil {
@@ -333,14 +335,29 @@ func NewContainer(ctx gocontext.Context, client *containerd.Client, context *cli
 		if cwd := context.String("cwd"); cwd != "" {
 			opts = append(opts, oci.WithProcessCwd(cwd))
 		}
+-		// 需要tty交互，设置spec.Process.Terminal=true，同时环境变量TERM=xterm		
 		if context.Bool("tty") {
 			opts = append(opts, oci.WithTTY)
 		}
 		if context.Bool("privileged") {
 			opts = append(opts, oci.WithPrivileged, oci.WithAllDevicesAllowed, oci.WithHostDevices)
 		}
+
+-		// 如果容器里使用host的物理网卡
 		if context.Bool("net-host") {
-			opts = append(opts, oci.WithHostNamespace(specs.NetworkNamespace), oci.WithHostHostsFile, oci.WithHostResolvconf)
+			hostname, err := os.Hostname()
+			if err != nil {
+				return nil, errors.Wrap(err, "get hostname")
+			}
+			opts = append(opts,
+-				// 把spec里的network namespace直接删除，表示默认用host的
+				oci.WithHostNamespace(specs.NetworkNamespace),
+-				// Mount主机里的/etc/host文件到容器里
+				oci.WithHostHostsFile,
+-				// Mount主机里/etc/resolve.conf文件到容器里
+				oci.WithHostResolvconf,
+				oci.WithEnv([]string{fmt.Sprintf("HOSTNAME=%s", hostname)}),
+			)
 		}
 
 		seccompProfile := context.String("seccomp-profile")
@@ -349,6 +366,7 @@ func NewContainer(ctx gocontext.Context, client *containerd.Client, context *cli
 			return nil, fmt.Errorf("seccomp must be set to true, if using a custom seccomp-profile")
 		}
 
+-		// 如果提供seccomp-profile json文件，把该文件解析到spec.Linux.Seccomp
 		if context.Bool("seccomp") {
 			if seccompProfile != "" {
 				opts = append(opts, seccomp.WithProfile(seccompProfile))
@@ -360,7 +378,7 @@ func NewContainer(ctx gocontext.Context, client *containerd.Client, context *cli
 		if s := context.String("apparmor-default-profile"); len(s) > 0 {
 			opts = append(opts, apparmor.WithDefaultProfile(s))
 		}
-
+-		// 把apparmor-profile设置到spec.Process.ApparmorProfile
 		if s := context.String("apparmor-profile"); len(s) > 0 {
 			if len(context.String("apparmor-default-profile")) > 0 {
 				return nil, fmt.Errorf("apparmor-profile conflicts with apparmor-default-profile")
@@ -368,6 +386,7 @@ func NewContainer(ctx gocontext.Context, client *containerd.Client, context *cli
 			opts = append(opts, apparmor.WithProfile(s))
 		}
 
+-		// 设置cpu相关的cgroup，包括cpus，cpu-shares，cpu-quota，cpu-period
 		if cpus := context.Float64("cpus"); cpus > 0.0 {
 			var (
 				period = uint64(100000)
@@ -389,6 +408,7 @@ func NewContainer(ctx gocontext.Context, client *containerd.Client, context *cli
 			opts = append(opts, oci.WithCPUCFS(quota, period))
 		}
 
+-		// 设置加入指定的namespace，格式是tpe: path
 		joinNs := context.StringSlice("with-ns")
 		for _, ns := range joinNs {
 			parts := strings.Split(ns, ":")
@@ -413,6 +433,7 @@ func NewContainer(ctx gocontext.Context, client *containerd.Client, context *cli
 			// NOTE: can be set to "" explicitly for disabling cgroup.
 			opts = append(opts, oci.WithCgroup(context.String("cgroup")))
 		}
+-		// 设置内存限制
 		limit := context.Uint64("memory-limit")
 		if limit != 0 {
 			opts = append(opts, oci.WithMemoryLimit(limit))
@@ -445,7 +466,7 @@ func NewContainer(ctx gocontext.Context, client *containerd.Client, context *cli
 
 	opts = append(opts, oci.WithAnnotations(commands.LabelArgs(context.StringSlice("label"))))
 	var s specs.Spec
-	// 生成一个新的spec闭包，它会apply所有opts里定义的操作	
+-	// 生成一个新的spec闭包，它会apply所有opts里定义的操作	
 	spec = containerd.WithSpec(&s, opts...)
 
 	cOpts = append(cOpts, spec)
@@ -578,7 +599,7 @@ func (c *container) NewTask(ctx context.Context, ioCreate cio.Creator, opts ...N
 		if err != nil {
 			return nil, err
 		}
-+		// 获取mounts的命令行		
+-		// 获取mounts的命令行		
 		mounts, err := s.Mounts(ctx, r.SnapshotKey)
 		if err != nil {
 			return nil, err
@@ -587,7 +608,7 @@ func (c *container) NewTask(ctx context.Context, ioCreate cio.Creator, opts ...N
 		if err != nil {
 			return nil, err
 		}
-+		// 解析mounts命令行		
+-		// 解析mounts命令行		
 		for _, m := range mounts {
 			if spec.Linux != nil && spec.Linux.MountLabel != "" {
 				context := label.FormatMountLabel("", spec.Linux.MountLabel)
@@ -636,7 +657,7 @@ func (c *container) NewTask(ctx context.Context, ioCreate cio.Creator, opts ...N
 		request.Checkpoint = info.Checkpoint
 	}
 +	// 请求task service创建container	
-+	response, err := c.client.TaskService().Create(ctx, request)
+	response, err := c.client.TaskService().Create(ctx, request)
 	if err != nil {
 		return nil, errdefs.FromGRPC(err)
 	}
@@ -698,7 +719,7 @@ func (l *local) Create(ctx context.Context, r *api.CreateTaskRequest, _ ...grpc.
 		log.G(ctx).Warnf("%q is deprecated since containerd v1.4, consider using %q", plugin.RuntimeRuncV1, plugin.RuntimeRuncV2)
 	}
 +	// 获取PlatformRuntime，默认是taskmanger_v2_shim
-+	rtime, err := l.getRuntime(container.Runtime.Name)
+	rtime, err := l.getRuntime(container.Runtime.Name)
 	if err != nil {
 		return nil, err
 	}
@@ -709,8 +730,8 @@ func (l *local) Create(ctx context.Context, r *api.CreateTaskRequest, _ ...grpc.
 	if err == nil {
 		return nil, errdefs.ToGRPC(fmt.Errorf("task %s already exists", r.ContainerID))
 	}
-+	// 调用taskmanger_v2_shim.Create来创建container，要通过Shim	
-+	c, err := rtime.Create(ctx, r.ContainerID, opts)
+-	// 调用taskmanger_v2_shim.Create来创建container，要通过Shim	
+	c, err := rtime.Create(ctx, r.ContainerID, opts)
 	if err != nil {
 		return nil, errdefs.ToGRPC(err)
 	}
