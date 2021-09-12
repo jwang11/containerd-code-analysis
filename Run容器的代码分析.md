@@ -433,11 +433,12 @@ func NewContainer(ctx gocontext.Context, client *containerd.Client, context *cli
 			// NOTE: can be set to "" explicitly for disabling cgroup.
 			opts = append(opts, oci.WithCgroup(context.String("cgroup")))
 		}
--		// 设置内存限制
+-		// 设置内存限制spec.Linux.Resources.Memory.Limit 
 		limit := context.Uint64("memory-limit")
 		if limit != 0 {
 			opts = append(opts, oci.WithMemoryLimit(limit))
 		}
+-		// 设置容器里的device和权限，spec.Linux.Devices和spec.Linux.Resources.Devices		
 		for _, dev := range context.StringSlice("device") {
 			opts = append(opts, oci.WithDevices(dev, "", "rwm"))
 		}
