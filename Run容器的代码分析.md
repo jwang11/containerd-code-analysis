@@ -61,8 +61,8 @@ OPTIONS:
    --no-pivot                              disable use of pivot-root (linux only)
    --cpu-quota value                       Limit CPU CFS quota (default: -1)
    --cpu-period value                      Limit CPU CFS period (default: 0)
-
 ```
+
 - 代码入口
 ```diff
 // Command runs a container
@@ -222,7 +222,7 @@ var Command = cli.Command{
 	},
 }
 ```
-- ***newContainer***是创建一个container，它分成两部分，前面部分是Linux specific，后面是client.newContainer是通用
+- ***newContainer***是创建一个container对象，保存在containerd的metadata中，注意，这里没有涉及runc
 ```diff
 // NewContainer creates a new container
 func NewContainer(ctx gocontext.Context, client *containerd.Client, context *cli.Context) (containerd.Container, error) {
@@ -479,6 +479,148 @@ func NewContainer(ctx gocontext.Context, client *containerd.Client, context *cli
 	// oci.WithImageConfig (WithUsername, WithUserID) depends on access to rootfs for resolving via
 	// the /etc/{passwd,group} files. So cOpts needs to have precedence over opts.
 +	return client.NewContainer(ctx, id, cOpts...)
+}
+```
+- 总结一下cOpts和opts里面的闭包操作
+```diff
+- cOpts = append(cOpts, containerd.WithContainerLabels(commands.LabelArgs(context.StringSlice("label"))))
+// WithContainerLabels sets the provided labels to the container.
+// The existing labels are cleared.
+// Use WithAdditionalContainerLabels to preserve the existing labels.
+func WithContainerLabels(labels map[string]string) NewContainerOpts {
+	return func(_ context.Context, _ *Client, c *containers.Container) error {
+		c.Labels = labels
+		return nil
+	}
+}
+
+- opts = append(opts, oci.WithDefaultSpec(), oci.WithDefaultUnixDevices)
+// WithDefaultSpec returns a SpecOpts that will populate the spec with default
+// values.
+//
+// Use as the first option to clear the spec, then apply options afterwards.
+func WithDefaultSpec() SpecOpts {
+	return func(ctx context.Context, _ Client, c *containers.Container, s *Spec) error {
+		return generateDefaultSpecWithPlatform(ctx, platforms.DefaultString(), c.ID, s)
+	}
+}
+
+// WithDefaultUnixDevices adds the default devices for unix such as /dev/null, /dev/random to
+// the container's resource cgroup spec
+func WithDefaultUnixDevices(_ context.Context, _ Client, _ *containers.Container, s *Spec) error {
+	setLinux(s)
+	if s.Linux.Resources == nil {
+		s.Linux.Resources = &specs.LinuxResources{}
+	}
+	intptr := func(i int64) *int64 {
+		return &i
+	}
+	s.Linux.Resources.Devices = append(s.Linux.Resources.Devices, []specs.LinuxDeviceCgroup{
+		{
+			// "/dev/null",
+			Type:   "c",
+			Major:  intptr(1),
+			Minor:  intptr(3),
+			Access: rwm,
+			Allow:  true,
+		},
+		{
+			// "/dev/random",
+			Type:   "c",
+			Major:  intptr(1),
+			Minor:  intptr(8),
+			Access: rwm,
+			Allow:  true,
+		},
+		{
+			// "/dev/full",
+			Type:   "c",
+			Major:  intptr(1),
+			Minor:  intptr(7),
+			Access: rwm,
+			Allow:  true,
+		},
+		{
+			// "/dev/tty",
+			Type:   "c",
+			Major:  intptr(5),
+			Minor:  intptr(0),
+			Access: rwm,
+			Allow:  true,
+		},
+		{
+			// "/dev/zero",
+			Type:   "c",
+			Major:  intptr(1),
+			Minor:  intptr(5),
+			Access: rwm,
+			Allow:  true,
+		},
+		{
+			// "/dev/urandom",
+			Type:   "c",
+			Major:  intptr(1),
+			Minor:  intptr(9),
+			Access: rwm,
+			Allow:  true,
+		},
+		{
+			// "/dev/console",
+			Type:   "c",
+			Major:  intptr(5),
+			Minor:  intptr(1),
+			Access: rwm,
+			Allow:  true,
+		},
+		// /dev/pts/ - pts namespaces are "coming soon"
+		{
+			Type:   "c",
+			Major:  intptr(136),
+			Access: rwm,
+			Allow:  true,
+		},
+		{
+			Type:   "c",
+			Major:  intptr(5),
+			Minor:  intptr(2),
+			Access: rwm,
+			Allow:  true,
+		},
+		{
+			// tuntap
+			Type:   "c",
+			Major:  intptr(10),
+			Minor:  intptr(200),
+			Access: rwm,
+			Allow:  true,
+		},
+	}...)
+	return nil
+}
+
+-		if ef := context.String("env-file"); ef != "" {
+-			opts = append(opts, oci.WithEnvFile(ef))
+-		}
+
+// WithEnvFile adds environment variables from a file to the container's spec
+func WithEnvFile(path string) SpecOpts {
+	return func(_ context.Context, _ Client, _ *containers.Container, s *Spec) error {
+		var vars []string
+		f, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+
+		sc := bufio.NewScanner(f)
+		for sc.Scan() {
+			vars = append(vars, sc.Text())
+		}
+		if err = sc.Err(); err != nil {
+			return err
+		}
+		return WithEnv(vars)(nil, nil, nil, s)
+	}
 }
 ```
 
