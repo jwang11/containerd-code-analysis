@@ -873,6 +873,14 @@ func getNewTaskOpts(context *cli.Context) []containerd.NewTaskOpts {
 
 ### 服务端创建容器的Task
 - ***TaskService.Create***，外部service的Create -> 内部service.Create。注意，先得到v2 shim runtime，然后调用v2.create.
+> response, err := c.client.TaskService().Create(ctx, request)<br>
+> 通过gRPC调用tasks外部[servic](ehttps://github.com/containerd/containerd/blob/main/services/tasks/service.go)
+```diff
+func (s *service) Create(ctx context.Context, r *api.CreateTaskRequest) (*api.CreateTaskResponse, error) {
+	return s.local.Create(ctx, r)
+}
+```
+> 转到内部service
 ```diff
 func (l *local) Create(ctx context.Context, r *api.CreateTaskRequest, _ ...grpc.CallOption) (*api.CreateTaskResponse, error) {
 	container, err := l.getContainer(ctx, r.ContainerID)
@@ -905,7 +913,7 @@ func (l *local) Create(ctx context.Context, r *api.CreateTaskRequest, _ ...grpc.
 	} else if container.Runtime.Name == plugin.RuntimeRuncV1 {
 		log.G(ctx).Warnf("%q is deprecated since containerd v1.4, consider using %q", plugin.RuntimeRuncV1, plugin.RuntimeRuncV2)
 	}
-+	// 获取PlatformRuntime，默认是taskmanger_v2_shim
+-	// 获取PlatformRuntime，默认是taskmanger_v2_shim
 	rtime, err := l.getRuntime(container.Runtime.Name)
 	if err != nil {
 		return nil, err
@@ -1068,8 +1076,8 @@ func (m *TaskManager) startShim(ctx context.Context, bundle *Bundle, id string, 
 	if topts == nil {
 		topts = opts.RuntimeOptions
 	}
-+	// containerd-shim-runc-shim --ns xxx --address xxx --bundle xxxx --id xxxx
-+	b := shimBinary(bundle, opts.Runtime, m.containerdAddress, m.containerdTTRPCAddress)
+-	// 命令行格式类似$containerd-shim-runc-shim --ns xxx --address xxx --bundle xxxx --id xxxx
+	b := shimBinary(bundle, opts.Runtime, m.containerdAddress, m.containerdTTRPCAddress)
 +	shim, err := b.Start(ctx, topts, func() {
 		log.G(ctx).WithField("id", id).Info("shim disconnected")
 
@@ -1087,7 +1095,7 @@ func (m *TaskManager) startShim(ctx context.Context, bundle *Bundle, id string, 
 	return shim, nil
 }
 ```
-- shimBinary实现
+> shimBinary启动
 ```diff
 func shimBinary(bundle *Bundle, runtime, containerdAddress string, containerdTTRPCAddress string) *binary {
 	return &binary{
@@ -1104,6 +1112,7 @@ type binary struct {
 	bundle                 *Bundle
 }
 
+- // 启动shim v2
 func (b *binary) Start(ctx context.Context, opts *types.Any, onClose func()) (_ *shim, err error) {
 	args := []string{"-id", b.bundle.ID}
 	switch logrus.GetLevel() {
@@ -1169,8 +1178,8 @@ func (b *binary) Start(ctx context.Context, opts *types.Any, onClose func()) (_ 
 		cancelShimLog()
 		f.Close()
 	}
-+	// 创建client用来和v2 shim通信
-+	client := ttrpc.NewClient(conn, ttrpc.WithOnClose(onCloseWithShimLog))
+-	// 创建client用来和v2 shim通信
+	client := ttrpc.NewClient(conn, ttrpc.WithOnClose(onCloseWithShimLog))
 	return &shim{
 		bundle: b.bundle,
 		client: client,
@@ -1179,7 +1188,7 @@ func (b *binary) Start(ctx context.Context, opts *types.Any, onClose func()) (_ 
 }
 ```
 
-- shim.Create实现
+- shim.Create实现了一个create task的请求
 ```
 func (s *shim) Create(ctx context.Context, opts runtime.CreateOpts) (runtime.Task, error) {
 	topts := opts.TaskOptions
@@ -1262,20 +1271,20 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 - ***TaskService.Start***。从外部service的Start -> 内部service的Start
 ```diff
 func (l *local) Start(ctx context.Context, r *api.StartRequest, _ ...grpc.CallOption) (*api.StartResponse, error) {
-+	// 返回runtime.Task接口类型
-+	t, err := l.getTask(ctx, r.ContainerID)
+-	// 返回runtime.Task接口类型
+	t, err := l.getTask(ctx, r.ContainerID)
 	if err != nil {
 		return nil, err
 	}
-+	//强制转换到runtime.Process	
+-	//强制转换到runtime.Process	
 	p := runtime.Process(t)
 	if r.ExecID != "" {
 		if p, err = t.Process(ctx, r.ExecID); err != nil {
 			return nil, errdefs.ToGRPC(err)
 		}
 	}
-+	// 启动task，其实就是runc命令行
-+	if err := p.Start(ctx); err != nil {
+-	// 启动task，其实就是runc命令行
+	if err := p.Start(ctx); err != nil {
 		return nil, errdefs.ToGRPC(err)
 	}
 +	state, err := p.State(ctx)
@@ -1287,6 +1296,7 @@ func (l *local) Start(ctx context.Context, r *api.StartRequest, _ ...grpc.CallOp
 	}, nil
 }
 ```
+> 支持函数
 ```
 		func (l *local) getTask(ctx context.Context, id string) (runtime.Task, error) {
 			container, err := l.getContainer(ctx, id)
