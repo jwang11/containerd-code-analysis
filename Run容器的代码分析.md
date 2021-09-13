@@ -565,6 +565,7 @@ func NewTask(ctx gocontext.Context, client *containerd.Client, container contain
 ```
 > 这里把ioOpts总结一下，它是处理container里面的tty IO.
 ```diff
+- 1. 设置fifo路径
 cio.WithFIFODir(context.String("fifo-dir"))
 
 // WithFIFODir sets the fifo directory.
@@ -575,7 +576,8 @@ func WithFIFODir(dir string) Opt {
 	}
 }
 
--  // 如果有tty
+
+-  2. 如果命令行指定tty，把当前console设置给container里的三个streams，同时terminal=true
 cio.WithStreams(con, con, nil)
 
 // WithStreams sets the stream options to the specified Reader and Writers
@@ -591,9 +593,47 @@ func WithStreams(stdin io.Reader, stdout, stderr io.Writer) Opt {
 func WithTerminal(opt *Streams) {
 	opt.Terminal = true
 }
+```
 
-- // 如果null-io
-cio.WithStreams(stdinC, os.Stdout, os.Stderr)
+- 用cioOpts创建ioCreator
+```diff
+// NewCreator returns an IO creator from the options
+func NewCreator(opts ...Opt) Creator {
+	streams := &Streams{}
+	for _, opt := range opts {
+		opt(streams)
+	}
+	if streams.FIFODir == "" {
+		streams.FIFODir = defaults.DefaultFIFODir
+	}
+	return func(id string) (IO, error) {
+		fifos, err := NewFIFOSetInDir(streams.FIFODir, id, streams.Terminal)
+		if err != nil {
+			return nil, err
+		}
+		if streams.Stdin == nil {
+			fifos.Stdin = ""
+		}
+		if streams.Stdout == nil {
+			fifos.Stdout = ""
+		}
+		if streams.Stderr == nil {
+			fifos.Stderr = ""
+		}
+		return copyIO(fifos, streams)
+	}
+}
+
+// NewFIFOSet returns a new FIFOSet from a Config and a close function
+func NewFIFOSet(config Config, close func() error) *FIFOSet {
+	return &FIFOSet{Config: config, close: close}
+}
+
+// FIFOSet is a set of file paths to FIFOs for a task's standard IO streams
+type FIFOSet struct {
+	Config
+	close func() error
+}
 ```
 
 - container.NewTask。此函数会向containerd中的task service发送创建任务请求，task service中会启动containerd-shim（v2）进程调用runc来创建容器。
