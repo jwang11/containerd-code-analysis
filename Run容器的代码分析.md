@@ -136,7 +136,7 @@ var Command = cli.Command{
 			return err
 		}
 		defer cancel()
--		// 创建Container对象
+-		// 创建Container对象，只在containerd端
 		container, err := NewContainer(ctx, client, context)
 		if err != nil {
 			return err
