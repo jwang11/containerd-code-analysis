@@ -665,7 +665,7 @@ type pipes struct {
 
 func copyIO(fifos *FIFOSet, ioset *Streams) (*cio, error) {
 	var ctx, cancel = context.WithCancel(context.Background())
-	pipes, err := openFifos(ctx, fifos)
++	pipes, err := openFifos(ctx, fifos)
 	if err != nil {
 		cancel()
 		return nil, err
