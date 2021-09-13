@@ -518,7 +518,7 @@ func containerFromRecord(client *Client, c containers.Container) *container {
 }
 ```
 
-- newTask创建run container的任务
+- NewTask创建运行container的任务
 ```diff
 +		task, err := tasks.NewTask(ctx, client, container, context.String("checkpoint"), con, context.Bool("null-io"), context.String("log-uri"), ioOpts, opts...)
 ```
@@ -563,13 +563,44 @@ func NewTask(ctx gocontext.Context, client *containerd.Client, container contain
 	return t, nil
 }
 ```
+> 这里把ioOpts总结一下，它是处理container里面的tty IO.
+```diff
+cio.WithFIFODir(context.String("fifo-dir"))
+
+// WithFIFODir sets the fifo directory.
+// e.g. "/run/containerd/fifo", "/run/users/1001/containerd/fifo"
+func WithFIFODir(dir string) Opt {
+	return func(opt *Streams) {
+		opt.FIFODir = dir
+	}
+}
+
+-  // 如果有tty
+cio.WithStreams(con, con, nil)
+
+// WithStreams sets the stream options to the specified Reader and Writers
+func WithStreams(stdin io.Reader, stdout, stderr io.Writer) Opt {
+	return func(opt *Streams) {
+		opt.Stdin = stdin
+		opt.Stdout = stdout
+		opt.Stderr = stderr
+	}
+}
+
+// WithTerminal sets the terminal option
+func WithTerminal(opt *Streams) {
+	opt.Terminal = true
+}
+
+- // 如果null-io
+cio.WithStreams(stdinC, os.Stdout, os.Stderr)
+```
 
 - container.NewTask。此函数会向containerd中的task service发送创建任务请求，task service中会启动containerd-shim（v2）进程调用runc来创建容器。
 ```
 type task struct {
 	client *Client
 	c      Container
-
 	io  cio.IO
 	id  string
 	pid uint32
@@ -691,6 +722,34 @@ func (t *task) Start(ctx context.Context) error {
 	}
 	t.pid = r.Pid
 	return nil
+}
+```
+
+- 在分析服务器端的代码之前，总结一下NewTaskOpts有哪些
+```diff
+- // 这是在New
+func getNewTaskOpts(context *cli.Context) []containerd.NewTaskOpts {
+	var (
+		tOpts []containerd.NewTaskOpts
+	)
+	if context.Bool("no-pivot") {
+		tOpts = append(tOpts, containerd.WithNoPivotRoot)
+	}
+	if uidmap := context.String("uidmap"); uidmap != "" {
+		uidMap, err := parseIDMapping(uidmap)
+		if err != nil {
+			logrus.WithError(err).Warn("unable to parse uidmap; defaulting to uid 0 IO ownership")
+		}
+		tOpts = append(tOpts, containerd.WithUIDOwner(uidMap.HostID))
+	}
+	if gidmap := context.String("gidmap"); gidmap != "" {
+		gidMap, err := parseIDMapping(gidmap)
+		if err != nil {
+			logrus.WithError(err).Warn("unable to parse gidmap; defaulting to gid 0 IO ownership")
+		}
+		tOpts = append(tOpts, containerd.WithGIDOwner(gidMap.HostID))
+	}
+	return tOpts
 }
 ```
 
