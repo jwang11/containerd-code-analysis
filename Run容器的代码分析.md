@@ -136,7 +136,8 @@ var Command = cli.Command{
 			return err
 		}
 		defer cancel()
-+		container, err := NewContainer(ctx, client, context)
+-		// 创建Container对象
+		container, err := NewContainer(ctx, client, context)
 		if err != nil {
 			return err
 		}
@@ -160,7 +161,8 @@ var Command = cli.Command{
 
 		opts := getNewTaskOpts(context)
 		ioOpts := []cio.Opt{cio.WithFIFODir(context.String("fifo-dir"))}
-+		task, err := tasks.NewTask(ctx, client, container, context.String("checkpoint"), con, context.Bool("null-io"), context.String("log-uri"), ioOpts, opts...)
+-		// 创建真正container - $runc create id
+		task, err := tasks.NewTask(ctx, client, container, context.String("checkpoint"), con, context.Bool("null-io"), context.String("log-uri"), ioOpts, opts...)
 		if err != nil {
 			return err
 		}
@@ -190,7 +192,8 @@ var Command = cli.Command{
 				return err
 			}
 		}
-+		if err := task.Start(ctx); err != nil {
+-		// 启动contaienr，runc start id		
+		if err := task.Start(ctx); err != nil {
 			return err
 		}
 		if detach {
