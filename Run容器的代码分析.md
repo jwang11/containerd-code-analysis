@@ -874,7 +874,7 @@ func getNewTaskOpts(context *cli.Context) []containerd.NewTaskOpts {
 ### 服务端创建容器的Task
 - ***TaskService.Create***，外部service的Create -> 内部service.Create。注意，先得到v2 shim runtime，然后调用v2.create.
 > response, err := c.client.TaskService().Create(ctx, request)<br>
-> 通过gRPC调用tasks外部[servic](ehttps://github.com/containerd/containerd/blob/main/services/tasks/service.go)
+> 通过gRPC调用tasks外部[service](https://github.com/containerd/containerd/blob/main/services/tasks/service.go)
 ```diff
 func (s *service) Create(ctx context.Context, r *api.CreateTaskRequest) (*api.CreateTaskResponse, error) {
 	return s.local.Create(ctx, r)
@@ -1003,7 +1003,7 @@ func (m *TaskManager) Create(ctx context.Context, id string, opts runtime.Create
 }
 ```
 
-- NewBundle的实现。准备rootfs，work，state路径和并写入spec文件
+> NewBundle的实现。准备rootfs，work，state路径和并写入spec文件
 ```diff
 func NewBundle(ctx context.Context, root, state, id string, spec []byte) (b *Bundle, err error) {
 	if err := identifiers.Validate(id); err != nil {
@@ -1064,7 +1064,7 @@ func NewBundle(ctx context.Context, root, state, id string, spec []byte) (b *Bun
 	return b, err
 }
 ```
-- startShim的实现
+> startShim的实现
 ```diff
 func (m *TaskManager) startShim(ctx context.Context, bundle *Bundle, id string, opts runtime.CreateOpts) (*shim, error) {
 	ns, err := namespaces.NamespaceRequired(ctx)
@@ -1078,7 +1078,7 @@ func (m *TaskManager) startShim(ctx context.Context, bundle *Bundle, id string, 
 	}
 -	// 命令行格式类似$containerd-shim-runc-shim --ns xxx --address xxx --bundle xxxx --id xxxx
 	b := shimBinary(bundle, opts.Runtime, m.containerdAddress, m.containerdTTRPCAddress)
-+	shim, err := b.Start(ctx, topts, func() {
++	shim, err := b.Start(ctx, topts, func() {	// 启动shim进程
 		log.G(ctx).WithField("id", id).Info("shim disconnected")
 
 		cleanupAfterDeadShim(context.Background(), id, ns, m.tasks, m.events, b)
@@ -1095,101 +1095,113 @@ func (m *TaskManager) startShim(ctx context.Context, bundle *Bundle, id string, 
 	return shim, nil
 }
 ```
-> shimBinary启动
+>> b.start，shimBinary启动
 ```diff
-func shimBinary(bundle *Bundle, runtime, containerdAddress string, containerdTTRPCAddress string) *binary {
-	return &binary{
-		bundle:                 bundle,
-		runtime:                runtime,
-		containerdAddress:      containerdAddress,
-		containerdTTRPCAddress: containerdTTRPCAddress,
-	}
-}
-type binary struct {
-	runtime                string
-	containerdAddress      string
-	containerdTTRPCAddress string
-	bundle                 *Bundle
+			func shimBinary(bundle *Bundle, runtime, containerdAddress string, containerdTTRPCAddress string) *binary {
+				return &binary{
+					bundle:                 bundle,
+					runtime:                runtime,
+					containerdAddress:      containerdAddress,
+					containerdTTRPCAddress: containerdTTRPCAddress,
+				}
+			}
+
+- 			// 启动shim v2
+			func (b *binary) Start(ctx context.Context, opts *types.Any, onClose func()) (_ *shim, err error) {
+				args := []string{"-id", b.bundle.ID}
+				switch logrus.GetLevel() {
+				case logrus.DebugLevel, logrus.TraceLevel:
+					args = append(args, "-debug")
+				}
+				args = append(args, "start")
+
+				cmd, err := client.Command(
+					ctx,
+					b.runtime,
+					b.containerdAddress,
+					b.containerdTTRPCAddress,
+					b.bundle.Path,
+					opts,
+					args...,
+				)
+				if err != nil {
+					return nil, err
+				}
+				// Windows needs a namespace when openShimLog
+				ns, _ := namespaces.Namespace(ctx)
+				shimCtx, cancelShimLog := context.WithCancel(namespaces.WithNamespace(context.Background(), ns))
+				defer func() {
+					if err != nil {
+						cancelShimLog()
+					}
+				}()
+				f, err := openShimLog(shimCtx, b.bundle, client.AnonDialer)
+				if err != nil {
+					return nil, errors.Wrap(err, "open shim log pipe")
+				}
+				defer func() {
+					if err != nil {
+						f.Close()
+					}
+				}()
+				// open the log pipe and block until the writer is ready
+				// this helps with synchronization of the shim
+				// copy the shim's logs to containerd's output
+				go func() {
+					defer f.Close()
+					_, err := io.Copy(os.Stderr, f)
+					// To prevent flood of error messages, the expected error
+					// should be reset, like os.ErrClosed or os.ErrNotExist, which
+					// depends on platform.
+					err = checkCopyShimLogError(ctx, err)
+					if err != nil {
+						log.G(ctx).WithError(err).Error("copy shim log")
+					}
+				}()
+-				// 运行命令，并返回标准输出和错误				
+				out, err := cmd.CombinedOutput()
+				if err != nil {
+					return nil, errors.Wrapf(err, "%s", out)
+				}
+				address := strings.TrimSpace(string(out))
+				conn, err := client.Connect(address, client.AnonDialer)
+				if err != nil {
+					return nil, err
+				}
+				onCloseWithShimLog := func() {
+					onClose()
+					cancelShimLog()
+					f.Close()
+				}
+-				// 创建client用来和v2 shim通信
+				client := ttrpc.NewClient(conn, ttrpc.WithOnClose(onCloseWithShimLog))
+				return &shim{
+					bundle: b.bundle,
+					client: client,
+					task:   task.NewTaskClient(client),
+				}, nil
+			}
+			
+// Connect to the provided address
+func Connect(address string, d func(string, time.Duration) (net.Conn, error)) (net.Conn, error) {
+	return d(address, 100*time.Second)
 }
 
-- // 启动shim v2
-func (b *binary) Start(ctx context.Context, opts *types.Any, onClose func()) (_ *shim, err error) {
-	args := []string{"-id", b.bundle.ID}
-	switch logrus.GetLevel() {
-	case logrus.DebugLevel, logrus.TraceLevel:
-		args = append(args, "-debug")
-	}
-	args = append(args, "start")
-
-	cmd, err := client.Command(
-		ctx,
-		b.runtime,
-		b.containerdAddress,
-		b.containerdTTRPCAddress,
-		b.bundle.Path,
-		opts,
-		args...,
-	)
-	if err != nil {
-		return nil, err
-	}
-	// Windows needs a namespace when openShimLog
-	ns, _ := namespaces.Namespace(ctx)
-	shimCtx, cancelShimLog := context.WithCancel(namespaces.WithNamespace(context.Background(), ns))
-	defer func() {
-		if err != nil {
-			cancelShimLog()
-		}
-	}()
-	f, err := openShimLog(shimCtx, b.bundle, client.AnonDialer)
-	if err != nil {
-		return nil, errors.Wrap(err, "open shim log pipe")
-	}
-	defer func() {
-		if err != nil {
-			f.Close()
-		}
-	}()
-	// open the log pipe and block until the writer is ready
-	// this helps with synchronization of the shim
-	// copy the shim's logs to containerd's output
-	go func() {
-		defer f.Close()
-		_, err := io.Copy(os.Stderr, f)
-		// To prevent flood of error messages, the expected error
-		// should be reset, like os.ErrClosed or os.ErrNotExist, which
-		// depends on platform.
-		err = checkCopyShimLogError(ctx, err)
-		if err != nil {
-			log.G(ctx).WithError(err).Error("copy shim log")
-		}
-	}()
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return nil, errors.Wrapf(err, "%s", out)
-	}
-	address := strings.TrimSpace(string(out))
-	conn, err := client.Connect(address, client.AnonDialer)
-	if err != nil {
-		return nil, err
-	}
-	onCloseWithShimLog := func() {
-		onClose()
-		cancelShimLog()
-		f.Close()
-	}
--	// 创建client用来和v2 shim通信
-	client := ttrpc.NewClient(conn, ttrpc.WithOnClose(onCloseWithShimLog))
-	return &shim{
-		bundle: b.bundle,
+func NewTaskClient(client *github_com_containerd_ttrpc.Client) TaskService {
+	return &taskClient{
 		client: client,
-		task:   task.NewTaskClient(client),
-	}, nil
+	}
 }
 ```
 
 - shim.Create实现了一个create task的请求
-```
+```diff
+type shim struct {
+	bundle *Bundle
+	client *ttrpc.Client
+	task   task.TaskService
+}
+
 func (s *shim) Create(ctx context.Context, opts runtime.CreateOpts) (runtime.Task, error) {
 	topts := opts.TaskOptions
 	if topts == nil {
@@ -1222,8 +1234,8 @@ func (s *shim) Create(ctx context.Context, opts runtime.CreateOpts) (runtime.Tas
 }
 ```
 
-- s.task.Create
-```
+> s.task.Create是调用shim进程里的create服务
+```diff
 func (c *taskClient) Create(ctx context.Context, req *CreateTaskRequest) (*CreateTaskResponse, error) {
 	var resp CreateTaskResponse
 	if err := c.client.Call(ctx, "containerd.task.v2.Task", "Create", req, &resp); err != nil {
@@ -1233,9 +1245,13 @@ func (c *taskClient) Create(ctx context.Context, req *CreateTaskRequest) (*Creat
 }
 ```
 
-- c.client.Call(ctx, "containerd.task.v2.Task", "Create", req, &resp)
-(https://github.com/containerd/containerd/blob/main/runtime/v2/runc/v2/service.go)
+### Shim进程
+- containerd请求创建Task
+```diff
++	c.client.Call(ctx, "containerd.task.v2.Task", "Create", req, &resp)
 ```
+(https://github.com/containerd/containerd/blob/main/runtime/v2/runc/v2/service.go)
+```diff
 // Create a new initial process and container with the underlying OCI runtime
 func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *taskAPI.CreateTaskResponse, err error) {
 	s.mu.Lock()
@@ -1268,6 +1284,296 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 }
 ```
 
+- runc.NewContainer
+```diff
+// NewContainer returns a new runc container
+func NewContainer(ctx context.Context, platform stdio.Platform, r *task.CreateTaskRequest) (_ *Container, retErr error) {
+	ns, err := namespaces.NamespaceRequired(ctx)
+	if err != nil {
+		return nil, errors.Wrap(err, "create namespace")
+	}
+
+	var opts options.Options
+	if r.Options != nil && r.Options.GetTypeUrl() != "" {
+		v, err := typeurl.UnmarshalAny(r.Options)
+		if err != nil {
+			return nil, err
+		}
+		opts = *v.(*options.Options)
+	}
+
+	var mounts []process.Mount
+	for _, m := range r.Rootfs {
+		mounts = append(mounts, process.Mount{
+			Type:    m.Type,
+			Source:  m.Source,
+			Target:  m.Target,
+			Options: m.Options,
+		})
+	}
+
+	rootfs := ""
+	if len(mounts) > 0 {
+		rootfs = filepath.Join(r.Bundle, "rootfs")
+		if err := os.Mkdir(rootfs, 0711); err != nil && !os.IsExist(err) {
+			return nil, err
+		}
+	}
+
+	config := &process.CreateConfig{
+		ID:               r.ID,
+		Bundle:           r.Bundle,
+		Runtime:          opts.BinaryName,
+		Rootfs:           mounts,
+		Terminal:         r.Terminal,
+		Stdin:            r.Stdin,
+		Stdout:           r.Stdout,
+		Stderr:           r.Stderr,
+		Checkpoint:       r.Checkpoint,
+		ParentCheckpoint: r.ParentCheckpoint,
+		Options:          r.Options,
+	}
+
+	if err := WriteOptions(r.Bundle, opts); err != nil {
+		return nil, err
+	}
+	// For historical reason, we write opts.BinaryName as well as the entire opts
+	if err := WriteRuntime(r.Bundle, opts.BinaryName); err != nil {
+		return nil, err
+	}
+	defer func() {
+		if retErr != nil {
+			if err := mount.UnmountAll(rootfs, 0); err != nil {
+				logrus.WithError(err).Warn("failed to cleanup rootfs mount")
+			}
+		}
+	}()
+	for _, rm := range mounts {
+		m := &mount.Mount{
+			Type:    rm.Type,
+			Source:  rm.Source,
+			Options: rm.Options,
+		}
+		if err := m.Mount(rootfs); err != nil {
+			return nil, errors.Wrapf(err, "failed to mount rootfs component %v", m)
+		}
+	}
+
++	p, err := newInit(
+		ctx,
+		r.Bundle,
+		filepath.Join(r.Bundle, "work"),
+		ns,
+		platform,
+		config,
+		&opts,
+		rootfs,
+	)
+	if err != nil {
+		return nil, errdefs.ToGRPC(err)
+	}
++	if err := p.Create(ctx, config); err != nil {
+		return nil, errdefs.ToGRPC(err)
+	}
+	container := &Container{
+		ID:              r.ID,
+		Bundle:          r.Bundle,
+		process:         p,
+		processes:       make(map[string]process.Process),
+		reservedProcess: make(map[string]struct{}),
+	}
+	pid := p.Pid()
+	if pid > 0 {
+		var cg interface{}
+		if cgroups.Mode() == cgroups.Unified {
+			g, err := cgroupsv2.PidGroupPath(pid)
+			if err != nil {
+				logrus.WithError(err).Errorf("loading cgroup2 for %d", pid)
+				return container, nil
+			}
+			cg, err = cgroupsv2.LoadManager("/sys/fs/cgroup", g)
+			if err != nil {
+				logrus.WithError(err).Errorf("loading cgroup2 for %d", pid)
+			}
+		} else {
+			cg, err = cgroups.Load(cgroups.V1, cgroups.PidPath(pid))
+			if err != nil {
+				logrus.WithError(err).Errorf("loading cgroup for %d", pid)
+			}
+		}
+		container.cgroup = cg
+	}
+	return container, nil
+}
+```
+> newInit
+```diff
+func newInit(ctx context.Context, path, workDir, namespace string, platform stdio.Platform,
+	r *process.CreateConfig, options *options.Options, rootfs string) (*process.Init, error) {
+	runtime := process.NewRunc(options.Root, path, namespace, options.BinaryName, options.CriuPath, options.SystemdCgroup)
+	p := process.New(r.ID, runtime, stdio.Stdio{
+		Stdin:    r.Stdin,
+		Stdout:   r.Stdout,
+		Stderr:   r.Stderr,
+		Terminal: r.Terminal,
+	})
+	p.Bundle = r.Bundle
+	p.Platform = platform
+	p.Rootfs = rootfs
+	p.WorkDir = workDir
+	p.IoUID = int(options.IoUid)
+	p.IoGID = int(options.IoGid)
+	p.NoPivotRoot = options.NoPivotRoot
+	p.NoNewKeyring = options.NoNewKeyring
+	p.CriuWorkPath = options.CriuWorkPath
+	if p.CriuWorkPath == "" {
+		// if criu work path not set, use container WorkDir
+		p.CriuWorkPath = p.WorkDir
+	}
+	return p, nil
+}
+
+// NewRunc returns a new runc instance for a process
+func NewRunc(root, path, namespace, runtime, criu string, systemd bool) *runc.Runc {
+	if root == "" {
+		root = RuncRoot
+	}
+	return &runc.Runc{
+		Command:       runtime,
+		Log:           filepath.Join(path, "log.json"),
+		LogFormat:     runc.JSON,
+		PdeathSignal:  unix.SIGKILL,
+		Root:          filepath.Join(root, namespace),
+		Criu:          criu,
+		SystemdCgroup: systemd,
+	}
+}
+
+// New returns a new process
+func New(id string, runtime *runc.Runc, stdio stdio.Stdio) *Init {
+	p := &Init{
+		id:        id,
+		runtime:   runtime,
+		pausing:   new(atomicBool),
+		stdio:     stdio,
+		status:    0,
+		waitBlock: make(chan struct{}),
+	}
+	p.initState = &createdState{p: p}
+	return p
+}
+
+// Init represents an initial process for a container
+type Init struct {
+	wg        sync.WaitGroup
+	initState initState
+
+	// mu is used to ensure that `Start()` and `Exited()` calls return in
+	// the right order when invoked in separate go routines.
+	// This is the case within the shim implementation as it makes use of
+	// the reaper interface.
+	mu sync.Mutex
+
+	waitBlock chan struct{}
+
+	WorkDir string
+
+	id       string
+	Bundle   string
+	console  console.Console
+	Platform stdio.Platform
+	io       *processIO
+	runtime  *runc.Runc
+	// pausing preserves the pausing state.
+	pausing      *atomicBool
+	status       int
+	exited       time.Time
+	pid          int
+	closers      []io.Closer
+	stdin        io.Closer
+	stdio        stdio.Stdio
+	Rootfs       string
+	IoUID        int
+	IoGID        int
+	NoPivotRoot  bool
+	NoNewKeyring bool
+	CriuWorkPath string
+}
+```
+
+- p.Create 
+```diff
+// Create the process with the provided config
+func (p *Init) Create(ctx context.Context, r *CreateConfig) error {
+	var (
+		err     error
+		socket  *runc.Socket
+		pio     *processIO
+		pidFile = newPidFile(p.Bundle)
+	)
+
+-	// 如果指定tty，就生成一个socket接收runc里面的masterfd
+	if r.Terminal {
+		if socket, err = runc.NewTempConsoleSocket(); err != nil {
+			return errors.Wrap(err, "failed to create OCI runtime console socket")
+		}
+		defer socket.Close()
+	} else {
+		if pio, err = createIO(ctx, p.id, p.IoUID, p.IoGID, p.stdio); err != nil {
+			return errors.Wrap(err, "failed to create init process I/O")
+		}
+		p.io = pio
+	}
+	if r.Checkpoint != "" {
+		return p.createCheckpointedState(r, pidFile)
+	}
+	opts := &runc.CreateOpts{
+		PidFile:      pidFile.Path(),
+		NoPivot:      p.NoPivotRoot,
+		NoNewKeyring: p.NoNewKeyring,
+	}
+	if p.io != nil {
+		opts.IO = p.io.IO()
+	}
+	if socket != nil {
+		opts.ConsoleSocket = socket
+	}
+-	// 启动runc	
+	if err := p.runtime.Create(ctx, r.ID, r.Bundle, opts); err != nil {
+		return p.runtimeError(err, "OCI runtime create failed")
+	}
+	if r.Stdin != "" {
+		if err := p.openStdin(r.Stdin); err != nil {
+			return err
+		}
+	}
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	if socket != nil {
+		console, err := socket.ReceiveMaster()
+		if err != nil {
+			return errors.Wrap(err, "failed to retrieve console master")
+		}
+		console, err = p.Platform.CopyConsole(ctx, console, p.id, r.Stdin, r.Stdout, r.Stderr, &p.wg)
+		if err != nil {
+			return errors.Wrap(err, "failed to start console copy")
+		}
+		p.console = console
+	} else {
+		if err := pio.Copy(ctx, &p.wg); err != nil {
+			return errors.Wrap(err, "failed to start io pipe copy")
+		}
+	}
+	pid, err := pidFile.Read()
+	if err != nil {
+		return errors.Wrap(err, "failed to retrieve OCI runtime container pid")
+	}
+	p.pid = pid
+	return nil
+}
+```
+
+### 回到containerd端
 - ***TaskService.Start***。从外部service的Start -> 内部service的Start
 ```diff
 func (l *local) Start(ctx context.Context, r *api.StartRequest, _ ...grpc.CallOption) (*api.StartResponse, error) {
