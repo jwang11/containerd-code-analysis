@@ -624,6 +624,28 @@ func NewCreator(opts ...Opt) Creator {
 	}
 }
 
+// NewFIFOSetInDir returns a new FIFOSet with paths in a temporary directory under root
+func NewFIFOSetInDir(root, id string, terminal bool) (*FIFOSet, error) {
+	if root != "" {
+		if err := os.MkdirAll(root, 0700); err != nil {
+			return nil, err
+		}
+	}
+	dir, err := ioutil.TempDir(root, "")
+	if err != nil {
+		return nil, err
+	}
+	closer := func() error {
+		return os.RemoveAll(dir)
+	}
+	return NewFIFOSet(Config{
+		Stdin:    filepath.Join(dir, id+"-stdin"),
+		Stdout:   filepath.Join(dir, id+"-stdout"),
+		Stderr:   filepath.Join(dir, id+"-stderr"),
+		Terminal: terminal,
+	}, closer), nil
+}
+
 // NewFIFOSet returns a new FIFOSet from a Config and a close function
 func NewFIFOSet(config Config, close func() error) *FIFOSet {
 	return &FIFOSet{Config: config, close: close}
@@ -633,6 +655,62 @@ func NewFIFOSet(config Config, close func() error) *FIFOSet {
 type FIFOSet struct {
 	Config
 	close func() error
+}
+
+type pipes struct {
+	Stdin  io.WriteCloser
+	Stdout io.ReadCloser
+	Stderr io.ReadCloser
+}
+
+func copyIO(fifos *FIFOSet, ioset *Streams) (*cio, error) {
+	var ctx, cancel = context.WithCancel(context.Background())
+	pipes, err := openFifos(ctx, fifos)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+
+	if fifos.Stdin != "" {
+		go func() {
+			p := bufPool.Get().(*[]byte)
+			defer bufPool.Put(p)
+
+			io.CopyBuffer(pipes.Stdin, ioset.Stdin, *p)
+			pipes.Stdin.Close()
+		}()
+	}
+
+	var wg = &sync.WaitGroup{}
+	if fifos.Stdout != "" {
+		wg.Add(1)
+		go func() {
+			p := bufPool.Get().(*[]byte)
+			defer bufPool.Put(p)
+
+			io.CopyBuffer(ioset.Stdout, pipes.Stdout, *p)
+			pipes.Stdout.Close()
+			wg.Done()
+		}()
+	}
+
+	if !fifos.Terminal && fifos.Stderr != "" {
+		wg.Add(1)
+		go func() {
+			p := bufPool.Get().(*[]byte)
+			defer bufPool.Put(p)
+
+			io.CopyBuffer(ioset.Stderr, pipes.Stderr, *p)
+			pipes.Stderr.Close()
+			wg.Done()
+		}()
+	}
+	return &cio{
+		config:  fifos.Config,
+		wg:      wg,
+		closers: append(pipes.closers(), fifos),
+		cancel:  cancel,
+	}, nil
 }
 ```
 
@@ -767,7 +845,7 @@ func (t *task) Start(ctx context.Context) error {
 
 - 在分析服务器端的代码之前，总结一下NewTaskOpts有哪些
 ```diff
-- // 这是在New
+- opts := getNewTaskOpts(context)
 func getNewTaskOpts(context *cli.Context) []containerd.NewTaskOpts {
 	var (
 		tOpts []containerd.NewTaskOpts
