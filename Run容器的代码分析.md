@@ -1538,7 +1538,7 @@ func (p *Init) Create(ctx context.Context, r *CreateConfig) error {
 	if socket != nil {
 		opts.ConsoleSocket = socket
 	}
--	// 启动runc	
+-	// 启动runc创建container,返回pid	
 	if err := p.runtime.Create(ctx, r.ID, r.Bundle, opts); err != nil {
 		return p.runtimeError(err, "OCI runtime create failed")
 	}
@@ -1570,6 +1570,50 @@ func (p *Init) Create(ctx context.Context, r *CreateConfig) error {
 	}
 	p.pid = pid
 	return nil
+}
+```
+- p.runtime.Create
+```
+// Create creates a new container and returns its pid if it was created successfully
+func (r *Runc) Create(context context.Context, id, bundle string, opts *CreateOpts) error {
+	args := []string{"create", "--bundle", bundle}
+	if opts != nil {
+		oargs, err := opts.args()
+		if err != nil {
+			return err
+		}
+		args = append(args, oargs...)
+	}
+	cmd := r.command(context, append(args, id)...)
+	if opts != nil && opts.IO != nil {
+		opts.Set(cmd)
+	}
+	cmd.ExtraFiles = opts.ExtraFiles
+
+	if cmd.Stdout == nil && cmd.Stderr == nil {
+		data, err := cmdOutput(cmd, true, nil)
+		defer putBuf(data)
+		if err != nil {
+			return fmt.Errorf("%s: %s", err, data.String())
+		}
+		return nil
+	}
+	ec, err := Monitor.Start(cmd)
+	if err != nil {
+		return err
+	}
+	if opts != nil && opts.IO != nil {
+		if c, ok := opts.IO.(StartCloser); ok {
+			if err := c.CloseAfterStart(); err != nil {
+				return err
+			}
+		}
+	}
+	status, err := Monitor.Wait(cmd, ec)
+	if err == nil && status != 0 {
+		err = fmt.Errorf("%s did not terminate successfully: %w", cmd.Args[0], &ExitError{status})
+	}
+	return err
 }
 ```
 
