@@ -483,6 +483,7 @@ func NewContainer(ctx gocontext.Context, client *containerd.Client, context *cli
 ```
 - 总结一下cOpts和opts里面的闭包操作
 ```diff
+- 设置label
 - cOpts = append(cOpts, containerd.WithContainerLabels(commands.LabelArgs(context.StringSlice("label"))))
 // WithContainerLabels sets the provided labels to the container.
 // The existing labels are cleared.
@@ -490,10 +491,16 @@ func NewContainer(ctx gocontext.Context, client *containerd.Client, context *cli
 func WithContainerLabels(labels map[string]string) NewContainerOpts {
 	return func(_ context.Context, _ *Client, c *containers.Container) error {
 		c.Labels = labels
-		return nil
++		return nil
 	}
 }
 
+- 设置image和snapshotter
+- dts = append(cOpts,
+-	containerd.WithImage(image),
+- ontainerd.WithSnapshotter(snapshotter))
+	
+- 生成缺省spec
 - opts = append(opts, oci.WithDefaultSpec(), oci.WithDefaultUnixDevices)
 // WithDefaultSpec returns a SpecOpts that will populate the spec with default
 // values.
@@ -505,6 +512,7 @@ func WithDefaultSpec() SpecOpts {
 	}
 }
 
+- 生成缺省device
 // WithDefaultUnixDevices adds the default devices for unix such as /dev/null, /dev/random to
 // the container's resource cgroup spec
 func WithDefaultUnixDevices(_ context.Context, _ Client, _ *containers.Container, s *Spec) error {
@@ -598,9 +606,9 @@ func WithDefaultUnixDevices(_ context.Context, _ Client, _ *containers.Container
 	return nil
 }
 
--		if ef := context.String("env-file"); ef != "" {
--			opts = append(opts, oci.WithEnvFile(ef))
--		}
+- 如果命令行指定环境变量文件--env-file
+-	opts = append(opts, oci.WithEnvFile(ef))
+
 
 // WithEnvFile adds environment variables from a file to the container's spec
 func WithEnvFile(path string) SpecOpts {
@@ -620,6 +628,135 @@ func WithEnvFile(path string) SpecOpts {
 			return err
 		}
 		return WithEnv(vars)(nil, nil, nil, s)
+	}
+}
+
+- 如果命令行指定环境变量--env
+- 	opts = append(opts, oci.WithEnv(context.StringSlice("env")))
+// WithEnv appends environment variables
+func WithEnv(environmentVariables []string) SpecOpts {
+	return func(_ context.Context, _ Client, _ *containers.Container, s *Spec) error {
+		if len(environmentVariables) > 0 {
+			setProcess(s)
+			s.Process.Env = replaceOrAppendEnvValues(s.Process.Env, environmentVariables)
+		}
+		return nil
+	}
+}
+
+- 设置mounts
+- opts = append(opts, withMounts(context))
+
+func withMounts(context *cli.Context) oci.SpecOpts {
+	return func(ctx gocontext.Context, client oci.Client, container *containers.Container, s *specs.Spec) error {
+		mounts := make([]specs.Mount, 0)
+		for _, mount := range context.StringSlice("mount") {
+			m, err := parseMountFlag(mount)
+			if err != nil {
+				return err
+			}
+			mounts = append(mounts, m)
+		}
+		return oci.WithMounts(mounts)(ctx, client, container, s)
+	}
+}
+
+// WithMounts appends mounts
+func WithMounts(mounts []specs.Mount) SpecOpts {
+	return func(_ context.Context, _ Client, _ *containers.Container, s *Spec) error {
+		s.Mounts = append(s.Mounts, mounts...)
+		return nil
+	}
+}
+
+- 如果image指定rootfs
+- opts = append(opts, oci.WithRootFSPath(rootfs))
+// WithRootFSPath specifies unmanaged rootfs path.
+func WithRootFSPath(path string) SpecOpts {
+	return func(_ context.Context, _ Client, _ *containers.Container, s *Spec) error {
+		setRoot(s)
+		s.Root.Path = path
+		// Entrypoint is not set here (it's up to caller)
+		return nil
+	}
+}
+
+- 如果image是ref
+- opts = append(opts, oci.WithImageConfig(image))
+// WithImageConfig configures the spec to from the configuration of an Image
+func WithImageConfig(image Image) SpecOpts {
+	return WithImageConfigArgs(image, nil)
+}
+// WithImageConfigArgs configures the spec to from the configuration of an Image with additional args that
+// replaces the CMD of the image
+func WithImageConfigArgs(image Image, args []string) SpecOpts {
+	return func(ctx context.Context, client Client, c *containers.Container, s *Spec) error {
+		ic, err := image.Config(ctx)
+		if err != nil {
+			return err
+		}
+		var (
+			ociimage v1.Image
+			config   v1.ImageConfig
+		)
+		switch ic.MediaType {
+		case v1.MediaTypeImageConfig, images.MediaTypeDockerSchema2Config:
+			p, err := content.ReadBlob(ctx, image.ContentStore(), ic)
+			if err != nil {
+				return err
+			}
+
+			if err := json.Unmarshal(p, &ociimage); err != nil {
+				return err
+			}
+			config = ociimage.Config
+		default:
+			return fmt.Errorf("unknown image config media type %s", ic.MediaType)
+		}
+
+		setProcess(s)
+		if s.Linux != nil {
+			defaults := config.Env
+			if len(defaults) == 0 {
+				defaults = defaultUnixEnv
+			}
+			s.Process.Env = replaceOrAppendEnvValues(defaults, s.Process.Env)
+			cmd := config.Cmd
+			if len(args) > 0 {
+				cmd = args
+			}
+			s.Process.Args = append(config.Entrypoint, cmd...)
+
+			cwd := config.WorkingDir
+			if cwd == "" {
+				cwd = "/"
+			}
+			s.Process.Cwd = cwd
+			if config.User != "" {
+				if err := WithUser(config.User)(ctx, client, c, s); err != nil {
+					return err
+				}
+				return WithAdditionalGIDs(fmt.Sprintf("%d", s.Process.User.UID))(ctx, client, c, s)
+			}
+			// we should query the image's /etc/group for additional GIDs
+			// even if there is no specified user in the image config
+			return WithAdditionalGIDs("root")(ctx, client, c, s)
+		} else if s.Windows != nil {
+			s.Process.Env = replaceOrAppendEnvValues(config.Env, s.Process.Env)
+			cmd := config.Cmd
+			if len(args) > 0 {
+				cmd = args
+			}
+			s.Process.Args = append(config.Entrypoint, cmd...)
+
+			s.Process.Cwd = config.WorkingDir
+			s.Process.User = specs.User{
+				Username: config.User,
+			}
+		} else {
+			return errors.New("spec does not contain Linux or Windows section")
+		}
+		return nil
 	}
 }
 ```
@@ -661,6 +798,8 @@ func containerFromRecord(client *Client, c containers.Container) *container {
 		metadata: c,
 	}
 }
+
+
 ```
 
 - NewTask创建运行container的任务
