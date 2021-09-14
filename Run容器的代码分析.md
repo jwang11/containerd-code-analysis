@@ -481,24 +481,24 @@ func NewContainer(ctx gocontext.Context, client *containerd.Client, context *cli
 +	return client.NewContainer(ctx, id, cOpts...)
 }
 ```
-- 总结一下cOpts和opts里面的闭包操作
+- 在分析client.NewContainer之前，总结一下cOpts和opts定义的闭包操作
 ```diff
 - 设置label
-- cOpts = append(cOpts, containerd.WithContainerLabels(commands.LabelArgs(context.StringSlice("label"))))
++ cOpts = append(cOpts, containerd.WithContainerLabels(commands.LabelArgs(context.StringSlice("label"))))
 // WithContainerLabels sets the provided labels to the container.
 // The existing labels are cleared.
 // Use WithAdditionalContainerLabels to preserve the existing labels.
 func WithContainerLabels(labels map[string]string) NewContainerOpts {
 	return func(_ context.Context, _ *Client, c *containers.Container) error {
 		c.Labels = labels
-+		return nil
+		return nil
 	}
 }
 
 - 设置image和snapshotter
-- cOpts = append(cOpts,
--	containerd.WithImage(image),
-- 	containerd.WithSnapshotter(snapshotter))
++ cOpts = append(cOpts,
++	containerd.WithImage(image),
++ 	containerd.WithSnapshotter(snapshotter))
 // WithImage sets the provided image as the base for the container
 func WithImage(i Image) NewContainerOpts {
 	return func(ctx context.Context, client *Client, c *containers.Container) error {
@@ -517,7 +517,7 @@ func WithSnapshotter(name string) NewContainerOpts {
 }
 
 - 设置Image退出信号
-- cOpts = append(cOpts, containerd.WithImageStopSignal(image, "SIGTERM"))
++ cOpts = append(cOpts, containerd.WithImageStopSignal(image, "SIGTERM"))
 // WithImageStopSignal sets a well-known containerd label (StopSignalLabel)
 // on the container for storing the stop signal specified in the OCI image
 // config
@@ -534,8 +534,8 @@ func WithImageStopSignal(image Image, defaultSignal string) NewContainerOpts {
 		return nil
 	}
 }
-- 生成缺省spec
-- opts = append(opts, oci.WithDefaultSpec(), oci.WithDefaultUnixDevices)
+- 生成缺省spec和device
++ opts = append(opts, oci.WithDefaultSpec(), oci.WithDefaultUnixDevices)
 // WithDefaultSpec returns a SpecOpts that will populate the spec with default
 // values.
 //
@@ -546,7 +546,6 @@ func WithDefaultSpec() SpecOpts {
 	}
 }
 
-- 生成缺省device
 // WithDefaultUnixDevices adds the default devices for unix such as /dev/null, /dev/random to
 // the container's resource cgroup spec
 func WithDefaultUnixDevices(_ context.Context, _ Client, _ *containers.Container, s *Spec) error {
@@ -641,7 +640,7 @@ func WithDefaultUnixDevices(_ context.Context, _ Client, _ *containers.Container
 }
 
 - 如果命令行指定环境变量文件--env-file
-- opts = append(opts, oci.WithEnvFile(ef))
++ opts = append(opts, oci.WithEnvFile(ef))
 // WithEnvFile adds environment variables from a file to the container's spec
 func WithEnvFile(path string) SpecOpts {
 	return func(_ context.Context, _ Client, _ *containers.Container, s *Spec) error {
@@ -664,7 +663,7 @@ func WithEnvFile(path string) SpecOpts {
 }
 
 - 如果命令行指定环境变量--env
-- opts = append(opts, oci.WithEnv(context.StringSlice("env")))
++ opts = append(opts, oci.WithEnv(context.StringSlice("env")))
 // WithEnv appends environment variables
 func WithEnv(environmentVariables []string) SpecOpts {
 	return func(_ context.Context, _ Client, _ *containers.Container, s *Spec) error {
@@ -677,7 +676,7 @@ func WithEnv(environmentVariables []string) SpecOpts {
 }
 
 - 设置mounts
-- opts = append(opts, withMounts(context))
++ opts = append(opts, withMounts(context))
 func withMounts(context *cli.Context) oci.SpecOpts {
 	return func(ctx gocontext.Context, client oci.Client, container *containers.Container, s *specs.Spec) error {
 		mounts := make([]specs.Mount, 0)
@@ -700,7 +699,7 @@ func WithMounts(mounts []specs.Mount) SpecOpts {
 }
 
 - 如果image指定rootfs
-- opts = append(opts, oci.WithRootFSPath(rootfs))
++ opts = append(opts, oci.WithRootFSPath(rootfs))
 // WithRootFSPath specifies unmanaged rootfs path.
 func WithRootFSPath(path string) SpecOpts {
 	return func(_ context.Context, _ Client, _ *containers.Container, s *Spec) error {
@@ -712,7 +711,7 @@ func WithRootFSPath(path string) SpecOpts {
 }
 
 - 如果image是ref
-- opts = append(opts, oci.WithImageConfig(image))
++ opts = append(opts, oci.WithImageConfig(image))
 // WithImageConfig configures the spec to from the configuration of an Image
 func WithImageConfig(image Image) SpecOpts {
 	return WithImageConfigArgs(image, nil)
@@ -791,7 +790,7 @@ func WithImageConfigArgs(image Image, args []string) SpecOpts {
 }
 
 - 如果指定tty
-- opts = append(opts, oci.WithTTY)
++ opts = append(opts, oci.WithTTY)
 // WithTTY sets the information on the spec as well as the environment variables for
 // using a TTY
 func WithTTY(_ context.Context, _ Client, _ *containers.Container, s *Spec) error {
@@ -811,6 +810,66 @@ func WithTTY(_ context.Context, _ Client, _ *containers.Container, s *Spec) erro
 -		oci.WithHostResolvconf,
 -		oci.WithEnv([]string{fmt.Sprintf("HOSTNAME=%s", hostname)}),
 -	)
+
+- 如果指定cpu（cgroup）个数
++ period = uint64(100000)
++ quota  = int64(cpus * 100000.0)
++ opts = append(opts, oci.WithCPUCFS(quota, period))
+// WithCPUCFS sets the container's Completely fair scheduling (CFS) quota and period
+func WithCPUCFS(quota int64, period uint64) SpecOpts {
+	return func(ctx context.Context, _ Client, c *containers.Container, s *Spec) error {
+		setCPU(s)
+		s.Linux.Resources.CPU.Quota = &quota
+		s.Linux.Resources.CPU.Period = &period
+		return nil
+	}
+}
+
+- 如果指定cpu-shares
++ opts = append(opts, oci.WithCPUShares(uint64(shares)))
+// WithCPUShares sets the container's cpu shares
+func WithCPUShares(shares uint64) SpecOpts {
+	return func(ctx context.Context, _ Client, c *containers.Container, s *Spec) error {
+		setCPU(s)
+		s.Linux.Resources.CPU.Shares = &shares
+		return nil
+	}
+}
+
+- 如果指定cpu-quota和cpu-period
++ quota := context.Int64("cpu-quota")
++ period := context.Uint64("cpu-period")
++ if quota != -1 || period != 0 
++ opts = append(opts, oci.WithCPUCFS(quota, period))
+func WithCPUCFS(quota int64, period uint64) SpecOpts {
+	return func(ctx context.Context, _ Client, c *containers.Container, s *Spec) error {
+		setCPU(s)
+		s.Linux.Resources.CPU.Quota = &quota
+		s.Linux.Resources.CPU.Period = &period
+		return nil
+	}
+}
+
+- 如果指定加入namespace，with-ns
++ opts = append(opts, oci.WithLinuxNamespace(specs.LinuxNamespace{
++		Type: specs.LinuxNamespaceType(parts[0]),
++		Path: parts[1],
++		}))
+// WithLinuxNamespace uses the passed in namespace for the spec. If a namespace of the same type already exists in the
+// spec, the existing namespace is replaced by the one provided.
+func WithLinuxNamespace(ns specs.LinuxNamespace) SpecOpts {
+	return func(_ context.Context, _ Client, _ *containers.Container, s *Spec) error {
+		setLinux(s)
+		for i, n := range s.Linux.Namespaces {
+			if n.Type == ns.Type {
+				s.Linux.Namespaces[i] = ns
+				return nil
+			}
+		}
+		s.Linux.Namespaces = append(s.Linux.Namespaces, ns)
+		return nil
+	}
+}
 
 ```
 
