@@ -1109,7 +1109,7 @@ func copyIO(fifos *FIFOSet, ioset *Streams) (*cio, error) {
 ```
 
 - container.NewTask。此函数会向containerd中的task service发送创建任务请求，task service中会启动containerd-shim（v2）进程调用runc来创建容器。
-```
+```diff
 type task struct {
 	client *Client
 	c      Container
@@ -1219,7 +1219,7 @@ func (c *container) NewTask(ctx context.Context, ioCreate cio.Creator, opts ...N
 ```
 
 - task.start
-```
+```diff
 func (t *task) Start(ctx context.Context) error {
 -	// 调用服务器端task servce的Start
 	r, err := t.client.TaskService().Start(ctx, &tasks.StartRequest{
@@ -1346,7 +1346,6 @@ func (l *local) getRuntime(name string) (runtime.PlatformRuntime, error) {
 	}
 	return runtime, nil
 }
-
 ```
 - TaskManager_v2_shim实现了PlatformRuntime接口(https://github.com/containerd/containerd/blob/main/runtime/v2/manager.go)，参考Runtime服务.md。这里我们只看Create
 ```diff
@@ -1967,7 +1966,7 @@ func (p *Init) Create(ctx context.Context, r *CreateConfig) error {
 }
 ```
 - p.runtime.Create
-```
+```diff
 // Create creates a new container and returns its pid if it was created successfully
 func (r *Runc) Create(context context.Context, id, bundle string, opts *CreateOpts) error {
 	args := []string{"create", "--bundle", bundle}
@@ -1992,6 +1991,7 @@ func (r *Runc) Create(context context.Context, id, bundle string, opts *CreateOp
 		}
 		return nil
 	}
+-	// 启动runc进程	
 	ec, err := Monitor.Start(cmd)
 	if err != nil {
 		return err
@@ -2012,7 +2012,7 @@ func (r *Runc) Create(context context.Context, id, bundle string, opts *CreateOp
 ```
 
 ### 回到containerd端
-- ***TaskService.Start***。从外部service的Start -> 内部service的Start
+- ***TaskService.Start***。外部service的Start -> 内部service的Start
 ```diff
 func (l *local) Start(ctx context.Context, r *api.StartRequest, _ ...grpc.CallOption) (*api.StartResponse, error) {
 -	// 返回runtime.Task接口类型
@@ -2041,7 +2041,7 @@ func (l *local) Start(ctx context.Context, r *api.StartRequest, _ ...grpc.CallOp
 }
 ```
 > 支持函数
-```
+```diff
 		func (l *local) getTask(ctx context.Context, id string) (runtime.Task, error) {
 			container, err := l.getContainer(ctx, id)
 			if err != nil {
@@ -2098,7 +2098,7 @@ func (p *process) Start(ctx context.Context) error {
 ```
 
 - p.shim.task.Start
-```
+```diff
 // Start a process
 func (s *service) Start(ctx context.Context, r *taskAPI.StartRequest) (*taskAPI.StartResponse, error) {
 	container, err := s.getContainer(r.ID)
@@ -2158,7 +2158,7 @@ func (s *service) Start(ctx context.Context, r *taskAPI.StartRequest) (*taskAPI.
 ```
 
 - container.start
-```
+```diff
 // Start a container process
 func (c *Container) Start(ctx context.Context, r *task.StartRequest) (process.Process, error) {
 	p, err := c.Process(r.ExecID)
@@ -2208,7 +2208,7 @@ func (c *Container) Process(id string) (process.Process, error) {
 }
 ```
 - (https://github.com/containerd/containerd/blob/main/pkg/process/init.go)
-```
+```diff
 // Start the init process
 func (p *Init) Start(ctx context.Context) error {
 	p.mu.Lock()
@@ -2219,7 +2219,7 @@ func (p *Init) Start(ctx context.Context) error {
 ```
 
 - s.p这里又回到了Init
-```
+```diff
 func (s *createdState) Start(ctx context.Context) error {
 	if err := s.p.start(ctx); err != nil {
 		return err
@@ -2228,54 +2228,42 @@ func (s *createdState) Start(ctx context.Context) error {
 }
 ```
 - p.runtime实际是runc库(https://github.com/opencontainers/runc),它包装了runc的命令行接口
-```
+```diff
 func (p *Init) start(ctx context.Context) error {
-	err := p.runtime.Start(ctx, p.id)
++	err := p.runtime.Start(ctx, p.id)
 	return p.runtimeError(err, "OCI runtime start failed")
 }
 ```
 
 - runc库
-```
-// Create creates a new container and returns its pid if it was created successfully
-func (r *Runc) Create(context context.Context, id, bundle string, opts *CreateOpts) error {
-	args := []string{"create", "--bundle", bundle}
-	if opts != nil {
-		oargs, err := opts.args()
+```diff
+// Start will start an already created container
+func (r *Runc) Start(context context.Context, id string) error {
+	return r.runOrError(r.command(context, "start", id))
+}
+
+// runOrError will run the provided command.  If an error is
+// encountered and neither Stdout or Stderr was set the error and the
+// stderr of the command will be returned in the format of <error>:
+// <stderr>
+func (r *Runc) runOrError(cmd *exec.Cmd) error {
+	if cmd.Stdout != nil || cmd.Stderr != nil {
+-		// 启动runc start进程	
+		ec, err := Monitor.Start(cmd)
 		if err != nil {
 			return err
 		}
-		args = append(args, oargs...)
-	}
-	cmd := r.command(context, append(args, id)...)
-	if opts != nil && opts.IO != nil {
-		opts.Set(cmd)
-	}
-	cmd.ExtraFiles = opts.ExtraFiles
-
-	if cmd.Stdout == nil && cmd.Stderr == nil {
-		data, err := cmdOutput(cmd, true, nil)
-		defer putBuf(data)
-		if err != nil {
-			return fmt.Errorf("%s: %s", err, data.String())
+		status, err := Monitor.Wait(cmd, ec)
+		if err == nil && status != 0 {
+			err = fmt.Errorf("%s did not terminate successfully: %w", cmd.Args[0], &ExitError{status})
 		}
-		return nil
-	}
-	ec, err := Monitor.Start(cmd)
-	if err != nil {
 		return err
 	}
-	if opts != nil && opts.IO != nil {
-		if c, ok := opts.IO.(StartCloser); ok {
-			if err := c.CloseAfterStart(); err != nil {
-				return err
-			}
-		}
+	data, err := cmdOutput(cmd, true, nil)
+	defer putBuf(data)
+	if err != nil {
+		return fmt.Errorf("%s: %s", err, data.String())
 	}
-	status, err := Monitor.Wait(cmd, ec)
-	if err == nil && status != 0 {
-		err = fmt.Errorf("%s did not terminate successfully: %w", cmd.Args[0], &ExitError{status})
-	}
-	return err
+	return nil
 }
 ```
