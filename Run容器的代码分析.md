@@ -496,10 +496,26 @@ func WithContainerLabels(labels map[string]string) NewContainerOpts {
 }
 
 - 设置image和snapshotter
-- dts = append(cOpts,
+- cOpts = append(cOpts,
 -	containerd.WithImage(image),
-- ontainerd.WithSnapshotter(snapshotter))
-	
+- 	containerd.WithSnapshotter(snapshotter))
+// WithImage sets the provided image as the base for the container
+func WithImage(i Image) NewContainerOpts {
+	return func(ctx context.Context, client *Client, c *containers.Container) error {
+		c.Image = i.Name()
+		return nil
+	}
+}
+// WithSnapshotter sets the provided snapshotter for use by the container
+//
+// This option must appear before other snapshotter options to have an effect.
+func WithSnapshotter(name string) NewContainerOpts {
+	return func(ctx context.Context, client *Client, c *containers.Container) error {
+		c.Snapshotter = name
+		return nil
+	}
+}
+
 - 生成缺省spec
 - opts = append(opts, oci.WithDefaultSpec(), oci.WithDefaultUnixDevices)
 // WithDefaultSpec returns a SpecOpts that will populate the spec with default
