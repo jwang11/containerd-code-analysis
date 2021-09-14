@@ -804,6 +804,13 @@ func WithTTY(_ context.Context, _ Client, _ *containers.Container, s *Spec) erro
 	return nil
 }
 
+- 如果指定net-host
+-	opts = append(opts,
+-		oci.WithHostNamespace(specs.NetworkNamespace),
+-		oci.WithHostHostsFile,
+-		oci.WithHostResolvconf,
+-		oci.WithEnv([]string{fmt.Sprintf("HOSTNAME=%s", hostname)}),
+-	)
 
 ```
 
@@ -817,7 +824,7 @@ func (c *Client) NewContainer(ctx context.Context, id string, opts ...NewContain
 		return nil, err
 	}
 	defer done(ctx)
--	// api/services/containers/v1/containers.pb.go(工具生成）
+
 	container := containers.Container{
 		ID: id,
 		Runtime: containers.RuntimeInfo{
@@ -844,8 +851,6 @@ func containerFromRecord(client *Client, c containers.Container) *container {
 		metadata: c,
 	}
 }
-
-
 ```
 
 - NewTask创建运行container的任务
