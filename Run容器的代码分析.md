@@ -516,6 +516,24 @@ func WithSnapshotter(name string) NewContainerOpts {
 	}
 }
 
+- 设置Image退出信号
+- cOpts = append(cOpts, containerd.WithImageStopSignal(image, "SIGTERM"))
+// WithImageStopSignal sets a well-known containerd label (StopSignalLabel)
+// on the container for storing the stop signal specified in the OCI image
+// config
+func WithImageStopSignal(image Image, defaultSignal string) NewContainerOpts {
+	return func(ctx context.Context, _ *Client, c *containers.Container) error {
+		if c.Labels == nil {
+			c.Labels = make(map[string]string)
+		}
+		stopSignal, err := GetOCIStopSignal(ctx, image, defaultSignal)
+		if err != nil {
+			return err
+		}
+		c.Labels[StopSignalLabel] = stopSignal
+		return nil
+	}
+}
 - 生成缺省spec
 - opts = append(opts, oci.WithDefaultSpec(), oci.WithDefaultUnixDevices)
 // WithDefaultSpec returns a SpecOpts that will populate the spec with default
@@ -623,9 +641,7 @@ func WithDefaultUnixDevices(_ context.Context, _ Client, _ *containers.Container
 }
 
 - 如果命令行指定环境变量文件--env-file
--	opts = append(opts, oci.WithEnvFile(ef))
-
-
+- opts = append(opts, oci.WithEnvFile(ef))
 // WithEnvFile adds environment variables from a file to the container's spec
 func WithEnvFile(path string) SpecOpts {
 	return func(_ context.Context, _ Client, _ *containers.Container, s *Spec) error {
@@ -648,7 +664,7 @@ func WithEnvFile(path string) SpecOpts {
 }
 
 - 如果命令行指定环境变量--env
-- 	opts = append(opts, oci.WithEnv(context.StringSlice("env")))
+- opts = append(opts, oci.WithEnv(context.StringSlice("env")))
 // WithEnv appends environment variables
 func WithEnv(environmentVariables []string) SpecOpts {
 	return func(_ context.Context, _ Client, _ *containers.Container, s *Spec) error {
@@ -662,7 +678,6 @@ func WithEnv(environmentVariables []string) SpecOpts {
 
 - 设置mounts
 - opts = append(opts, withMounts(context))
-
 func withMounts(context *cli.Context) oci.SpecOpts {
 	return func(ctx gocontext.Context, client oci.Client, container *containers.Container, s *specs.Spec) error {
 		mounts := make([]specs.Mount, 0)
@@ -676,7 +691,6 @@ func withMounts(context *cli.Context) oci.SpecOpts {
 		return oci.WithMounts(mounts)(ctx, client, container, s)
 	}
 }
-
 // WithMounts appends mounts
 func WithMounts(mounts []specs.Mount) SpecOpts {
 	return func(_ context.Context, _ Client, _ *containers.Container, s *Spec) error {
@@ -775,6 +789,22 @@ func WithImageConfigArgs(image Image, args []string) SpecOpts {
 		return nil
 	}
 }
+
+- 如果指定tty
+- opts = append(opts, oci.WithTTY)
+// WithTTY sets the information on the spec as well as the environment variables for
+// using a TTY
+func WithTTY(_ context.Context, _ Client, _ *containers.Container, s *Spec) error {
+	setProcess(s)
+	s.Process.Terminal = true
+	if s.Linux != nil {
+		s.Process.Env = append(s.Process.Env, "TERM=xterm")
+	}
+
+	return nil
+}
+
+
 ```
 
 - 转入client.NewContainer
