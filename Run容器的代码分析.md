@@ -65,9 +65,9 @@ OPTIONS:
 
 - 代码入口
 主要流程其实是分了三步<br>
-1. 创建container对象。这一步没有涉及v2 shim和runc，只是通过container服务在metadata里创建了一个名字是ID的container对象。<br>
-2. 创建Task，启动v2 shim，然后通过shim运行$runc create image ID。<br>
-3. 启动Task，相当于$runc start ID <br>
+		1. 创建container对象。这一步没有涉及v2 shim和runc，只是通过container服务在metadata里创建了一个名字是ID的container对象。<br>
+		2. 创建Task，启动v2 shim，然后通过shim运行$runc create image ID。<br>
+		3. 启动Task，相当于$runc start ID <br>
 
 ```diff
 // Command runs a container
@@ -201,6 +201,7 @@ var Command = cli.Command{
 		if err := task.Start(ctx); err != nil {
 			return err
 		}
+-		// 如果设置detach，这里就可以退出了		
 		if detach {
 			return nil
 		}
@@ -212,6 +213,7 @@ var Command = cli.Command{
 			sigc := commands.ForwardAllSignals(ctx, task)
 			defer commands.StopCatch(sigc)
 		}
+-		// 等待container运行结束		
 		status := <-statusC
 		code, _, err := status.Result()
 		if err != nil {
