@@ -264,6 +264,7 @@ var Command = cli.Command{
 }
 ```
 - ***newContainer***是创建一个container对象，保存在containerd的metadata中，注意，这里没有涉及runc
+		* 根据命令行的输入，用opts和cOpts两个闭包数组来构建Spec和Container的属性。
 ```diff
 // NewContainer creates a new container
 func NewContainer(ctx gocontext.Context, client *containerd.Client, context *cli.Context) (containerd.Container, error) {
@@ -278,7 +279,9 @@ func NewContainer(ctx gocontext.Context, client *containerd.Client, context *cli
 	}
 
 	var (
+-		// 构建Spec的闭包数组		
 		opts  []oci.SpecOpts
+-		// 构建Container属性的闭包数组		
 		cOpts []containerd.NewContainerOpts
 		spec  containerd.NewContainerOpts
 	)
@@ -288,7 +291,7 @@ func NewContainer(ctx gocontext.Context, client *containerd.Client, context *cli
 		opts = append(opts, oci.WithSpecFromFile(context.String("config")))
 	} else {
 		var (
--			// 完整地image refence，如docker.io/library/busybox:latest
+-			// image reference，如docker.io/library/busybox:latest
 			ref = context.Args().First()
 			//for container's id is Args[1]
 			args = context.Args()[2:]
@@ -334,6 +337,7 @@ func NewContainer(ctx gocontext.Context, client *containerd.Client, context *cli
 					return nil, err
 				}
 			}
+-			// 从image提取oci config，解析后放入spec		
 			opts = append(opts, oci.WithImageConfig(image))
 			cOpts = append(cOpts,
 				containerd.WithImage(image),
@@ -752,6 +756,85 @@ func WithRootFSPath(path string) SpecOpts {
 }
 
 - 如果image是ref
++ opts = append(opts, oci.WithImageConfig(image))
+// WithImageConfig configures the spec to from the configuration of an Image
+func WithImageConfig(image Image) SpecOpts {
+	return WithImageConfigArgs(image, nil)
+}
+// WithImageConfigArgs configures the spec to from the configuration of an Image with additional args that
+// replaces the CMD of the image
+func WithImageConfigArgs(image Image, args []string) SpecOpts {
+	return func(ctx context.Context, client Client, c *containers.Container, s *Spec) error {
+		ic, err := image.Config(ctx)
+		if err != nil {
+			return err
+		}
+		var (
+			ociimage v1.Image
+			config   v1.ImageConfig
+		)
+		switch ic.MediaType {
+		case v1.MediaTypeImageConfig, images.MediaTypeDockerSchema2Config:
+			p, err := content.ReadBlob(ctx, image.ContentStore(), ic)
+			if err != nil {
+				return err
+			}
+
+			if err := json.Unmarshal(p, &ociimage); err != nil {
+				return err
+			}
+			config = ociimage.Config
+		default:
+			return fmt.Errorf("unknown image config media type %s", ic.MediaType)
+		}
+
+		setProcess(s)
+		if s.Linux != nil {
+			defaults := config.Env
+			if len(defaults) == 0 {
+				defaults = defaultUnixEnv
+			}
+			s.Process.Env = replaceOrAppendEnvValues(defaults, s.Process.Env)
+			cmd := config.Cmd
+			if len(args) > 0 {
+				cmd = args
+			}
+			s.Process.Args = append(config.Entrypoint, cmd...)
+
+			cwd := config.WorkingDir
+			if cwd == "" {
+				cwd = "/"
+			}
+			s.Process.Cwd = cwd
+			if config.User != "" {
+				if err := WithUser(config.User)(ctx, client, c, s); err != nil {
+					return err
+				}
+				return WithAdditionalGIDs(fmt.Sprintf("%d", s.Process.User.UID))(ctx, client, c, s)
+			}
+			// we should query the image's /etc/group for additional GIDs
+			// even if there is no specified user in the image config
+			return WithAdditionalGIDs("root")(ctx, client, c, s)
+		} else if s.Windows != nil {
+			s.Process.Env = replaceOrAppendEnvValues(config.Env, s.Process.Env)
+			cmd := config.Cmd
+			if len(args) > 0 {
+				cmd = args
+			}
+			s.Process.Args = append(config.Entrypoint, cmd...)
+
+			s.Process.Cwd = config.WorkingDir
+			s.Process.User = specs.User{
+				Username: config.User,
+			}
+		} else {
+			return errors.New("spec does not contain Linux or Windows section")
+		}
+		return nil
+	}
+}
+
+- 设置Image config
 + opts = append(opts, oci.WithImageConfig(image))
 // WithImageConfig configures the spec to from the configuration of an Image
 func WithImageConfig(image Image) SpecOpts {
