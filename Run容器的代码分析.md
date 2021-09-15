@@ -1,11 +1,7 @@
 # Containerd运行容器的代码分析
 > 通过ctr run命令行，指定一个image和ID，运行容器
 ```
-ctr -n default run --null-io --net-host -d \
-    --env PASSWORD=$drone_password \
-    --mount type=bind,src=/etc,dst=/host-etc,options=rbind:rw \
-    --mount type=bind,src=/root/.kube,dst=/root/.kube,options=rbind:rw \
-    $image $ID commands
+ctr run --net-host --rm -t docker.io/library/busybox:latest mybox1 /bin/sh
 ```
 
 ### Client端
@@ -69,6 +65,44 @@ OPTIONS:
 		2. 创建Task，启动v2 shim，然后通过shim运行$runc create image ID。<br>
 		3. 启动Task，相当于$runc start ID <br>
 
+> 在Linux系统里的缺省设置
+```diff
+package defaults
+
+const (
+	// DefaultMaxRecvMsgSize defines the default maximum message size for
+	// receiving protobufs passed over the GRPC API.
+	DefaultMaxRecvMsgSize = 16 << 20
+	// DefaultMaxSendMsgSize defines the default maximum message size for
+	// sending protobufs passed over the GRPC API.
+	DefaultMaxSendMsgSize = 16 << 20
+	// DefaultRuntimeNSLabel defines the namespace label to check for the
+	// default runtime
+	DefaultRuntimeNSLabel = "containerd.io/defaults/runtime"
+	// DefaultSnapshotterNSLabel defines the namespace label to check for the
+	// default snapshotter
+	DefaultSnapshotterNSLabel = "containerd.io/defaults/snapshotter"
+)
+const (
+	// DefaultRootDir is the default location used by containerd to store
+	// persistent data
+	DefaultRootDir = "/var/lib/containerd"
+	// DefaultStateDir is the default location used by containerd to store
+	// transient data
+	DefaultStateDir = "/run/containerd"
+	// DefaultAddress is the default unix socket address
+	DefaultAddress = "/run/containerd/containerd.sock"
+	// DefaultDebugAddress is the default unix socket address for pprof data
+	DefaultDebugAddress = "/run/containerd/debug.sock"
+	// DefaultFIFODir is the default location used by client-side cio library
+	// to store FIFOs.
+	DefaultFIFODir = "/run/containerd/fifo"
+	// DefaultRuntime is the default linux runtime
+	DefaultRuntime = "io.containerd.runc.v2"
+	// DefaultConfigDir is the default location for config files.
+	DefaultConfigDir = "/etc/containerd"
+)
+```
 ```diff
 // Command runs a container
 var Command = cli.Command{
@@ -248,7 +282,7 @@ func NewContainer(ctx gocontext.Context, client *containerd.Client, context *cli
 		cOpts []containerd.NewContainerOpts
 		spec  containerd.NewContainerOpts
 	)
-
+-	// 设置label，支持多个key1=val1,key2=val2...
 	cOpts = append(cOpts, containerd.WithContainerLabels(commands.LabelArgs(context.StringSlice("label"))))
 	if config {
 		opts = append(opts, oci.WithSpecFromFile(context.String("config")))
