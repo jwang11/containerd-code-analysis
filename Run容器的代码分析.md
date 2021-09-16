@@ -60,9 +60,9 @@ OPTIONS:
 
 ### 代码流程Overview
 - 主要流程其实是分了三步<br>
-		1. 创建container对象。这一步没有涉及v2 shim和runc，只是通过container服务在metadata里创建了一个名字是ID的container对象。<br>
-		2. 创建Task，启动v2 shim，然后通过shim运行$runc create image ID。<br>
-		3. 启动Task，相当于$runc start ID <br>
+		1. *创建container对象。这一步没有涉及v2 shim和runc，只是通过container服务在metadata里创建了一个名字是ID的container对象。*<br>
+		2. *创建Task，启动v2 shim，然后通过shim运行$runc create image ID。*<br>
+		3. *启动Task，相当于$runc start ID* <br>
 
 > 在Linux系统里的缺省设置
 ```diff
