@@ -1347,7 +1347,18 @@ func (c *container) NewTask(ctx context.Context, ioCreate cio.Creator, opts ...N
 	return t, nil
 }
 ```
+- [task结构](https://github.com/containerd/containerd/blob/main/task.go)
+```
+type task struct {
+	client *Client
+	c      Container
 
+	io  cio.IO
+	id  string
+	pid uint32
+}
+
+```
 - 在分析服务器端的代码之前，总结一下NewTaskOpts有哪些
 ```diff
 - opts := getNewTaskOpts(context)
