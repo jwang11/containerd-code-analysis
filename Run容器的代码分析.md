@@ -1308,11 +1308,13 @@ func (c *container) NewTask(ctx context.Context, ioCreate cio.Creator, opts ...N
 	info := TaskInfo{
 		runtime: r.Runtime.Name,
 	}
+-	// apply所有的newTaskOpts	
 	for _, o := range opts {
 		if err := o(ctx, c.client, &info); err != nil {
 			return nil, err
 		}
 	}
+-	// 填好rootfs的mount信息	
 	if info.RootFS != nil {
 		for _, m := range info.RootFS {
 			request.Rootfs = append(request.Rootfs, &types.Mount{
@@ -1322,6 +1324,7 @@ func (c *container) NewTask(ctx context.Context, ioCreate cio.Creator, opts ...N
 			})
 		}
 	}
+-	// 把info里Options信息填入request.Options	
 	if info.Options != nil {
 		any, err := typeurl.MarshalAny(info.Options)
 		if err != nil {
@@ -1338,7 +1341,7 @@ func (c *container) NewTask(ctx context.Context, ioCreate cio.Creator, opts ...N
 	if info.Checkpoint != nil {
 		request.Checkpoint = info.Checkpoint
 	}
-+	// 请求task service创建container	
+-	// 请求task service创建container	
 	response, err := c.client.TaskService().Create(ctx, request)
 	if err != nil {
 		return nil, errdefs.FromGRPC(err)
@@ -1399,7 +1402,7 @@ func (s *service) Create(ctx context.Context, r *api.CreateTaskRequest) (*api.Cr
 	return s.local.Create(ctx, r)
 }
 ```
-> 转到内部service
+- 转到内部service
 ```diff
 func (l *local) Create(ctx context.Context, r *api.CreateTaskRequest, _ ...grpc.CallOption) (*api.CreateTaskResponse, error) {
 	container, err := l.getContainer(ctx, r.ContainerID)
@@ -1407,6 +1410,7 @@ func (l *local) Create(ctx context.Context, r *api.CreateTaskRequest, _ ...grpc.
 		return nil, errdefs.ToGRPC(err)
 	}
 ...
+-	// 为runtime准备options，把reqest里的信息填进去
 	opts := runtime.CreateOpts{
 		Spec: container.Spec,
 		IO: runtime.IO{
@@ -1432,11 +1436,12 @@ func (l *local) Create(ctx context.Context, r *api.CreateTaskRequest, _ ...grpc.
 	} else if container.Runtime.Name == plugin.RuntimeRuncV1 {
 		log.G(ctx).Warnf("%q is deprecated since containerd v1.4, consider using %q", plugin.RuntimeRuncV1, plugin.RuntimeRuncV2)
 	}
--	// 获取PlatformRuntime，默认是taskmanger_v2_shim
+-	// 获取PlatformRuntime，默认是taskmanger_v2_shim。注意，这个runtime不是指runc，其实是runtime的manager。
 	rtime, err := l.getRuntime(container.Runtime.Name)
 	if err != nil {
 		return nil, err
 	}
+-	// 检查确保是新的task	
 	_, err = rtime.Get(ctx, r.ContainerID)
 	if err != nil && err != runtime.ErrTaskNotExists {
 		return nil, errdefs.ToGRPC(err)
@@ -1763,7 +1768,7 @@ func (c *taskClient) Create(ctx context.Context, req *CreateTaskRequest) (*Creat
 }
 ```
 
-### Shim进程
+- ***Shim进程***
 - containerd请求创建Task
 ```diff
 +	c.client.Call(ctx, "containerd.task.v2.Task", "Create", req, &resp)
@@ -2156,7 +2161,13 @@ func (t *task) Start(ctx context.Context) error {
 }
 ```
 
-- ***TaskService.Start***。外部service的Start -> 内部service的Start
+- ***TaskService.Start***调用server端Task Service的Start 
+```
+func (s *service) Start(ctx context.Context, r *api.StartRequest) (*api.StartResponse, error) {
+	return s.local.Start(ctx, r)
+}
+```
+- 转到内部service的Start
 ```diff
 func (l *local) Start(ctx context.Context, r *api.StartRequest, _ ...grpc.CallOption) (*api.StartResponse, error) {
 -	// 返回runtime.Task接口类型
