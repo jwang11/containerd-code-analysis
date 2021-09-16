@@ -4,8 +4,7 @@
 ctr run --net-host --rm -t docker.io/library/busybox:latest mybox1 /bin/sh
 ```
 
-### Client端
-- ***ctr run***命令
+### Client端命令格式
 ```
 root@jwang-desktop:/home/jwang/go_grpc/server# ctr run --help
 NAME:
@@ -59,8 +58,8 @@ OPTIONS:
    --cpu-period value                      Limit CPU CFS period (default: 0)
 ```
 
-- 代码入口
-主要流程其实是分了三步<br>
+### 代码流程Overview
+- 主要流程其实是分了三步<br>
 		1. 创建container对象。这一步没有涉及v2 shim和runc，只是通过container服务在metadata里创建了一个名字是ID的container对象。<br>
 		2. 创建Task，启动v2 shim，然后通过shim运行$runc create image ID。<br>
 		3. 启动Task，相当于$runc start ID <br>
@@ -263,8 +262,10 @@ var Command = cli.Command{
 	},
 }
 ```
-- ***newContainer***是创建一个container对象，保存在containerd的metadata中，注意，这里没有涉及runc
-		* 根据命令行的输入，用opts和cOpts两个闭包数组来构建Spec和Container的属性。
+
+### 步骤一：创建Contaienr对象
+- ***newContainer***是创建一个container对象，通过Continer服务保存在metadata中。注意，这里没有涉及runc
+- 主要思路是根据命令行的输入，用opts和cOpts两个闭包数组来构建Spec和Container属性。
 ```diff
 // NewContainer creates a new container
 func NewContainer(ctx gocontext.Context, client *containerd.Client, context *cli.Context) (containerd.Container, error) {
@@ -1037,7 +1038,8 @@ func containerFromRecord(client *Client, c containers.Container) *container {
 }
 ```
 
-- NewTask创建运行container的任务。
+### 步骤二：创建runtime里的container
+- NewTask创建Runtime里container
 ```diff
 +		task, err := tasks.NewTask(ctx, client, container, context.String("checkpoint"), con, context.Bool("null-io"), context.String("log-uri"), ioOpts, opts...)
 ```
@@ -1390,10 +1392,13 @@ func getNewTaskOpts(context *cli.Context) []containerd.NewTaskOpts {
 }
 ```
 
-### 服务端创建容器的Task
-- ***TaskService.Create***，外部service的Create -> 内部service.Create。注意，先得到v2 shim runtime，然后调用v2.create.
-> response, err := c.client.TaskService().Create(ctx, request)<br>
-> 通过gRPC调用tasks外部[service](https://github.com/containerd/containerd/blob/main/services/tasks/service.go)
+- 调用TaskService服务Create。
+```
+response, err := c.client.TaskService().Create(ctx, request)<br>
+```
+
+> 通过gRPC调用tasks外部[service](https://github.com/containerd/containerd/blob/main/services/tasks/service.go)<br>
+> 外部服务Create -> 内部service.Create -> v2shim.create.
 ```diff
 func (s *service) Create(ctx context.Context, r *api.CreateTaskRequest) (*api.CreateTaskResponse, error) {
 	return s.local.Create(ctx, r)
