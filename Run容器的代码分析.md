@@ -1526,7 +1526,7 @@ func (m *TaskManager) Create(ctx context.Context, id string, opts runtime.Create
 }
 ```
 
-> NewBundle的实现。准备rootfs，work，state路径和并写入spec文件
+> 创建OCI Bundle。准备好rootfs，work，state的目录和并建立spec文件
 ```diff
 func NewBundle(ctx context.Context, root, state, id string, spec []byte) (b *Bundle, err error) {
 	if err := identifiers.Validate(id); err != nil {
@@ -1586,6 +1586,16 @@ func NewBundle(ctx context.Context, root, state, id string, spec []byte) (b *Bun
 +	err = ioutil.WriteFile(filepath.Join(b.Path, configFilename), spec, 0666)
 	return b, err
 }
+
+// Bundle represents an OCI bundle
+type Bundle struct {
+	// ID of the bundle
+	ID string
+	// Path to the bundle
+	Path string
+	// Namespace of the bundle
+	Namespace string
+}
 ```
 > startShim的实现
 ```diff
@@ -1601,7 +1611,8 @@ func (m *TaskManager) startShim(ctx context.Context, bundle *Bundle, id string, 
 	}
 -	// 命令行格式类似$containerd-shim-runc-shim --ns xxx --address xxx --bundle xxxx --id xxxx
 	b := shimBinary(bundle, opts.Runtime, m.containerdAddress, m.containerdTTRPCAddress)
-+	shim, err := b.Start(ctx, topts, func() {	// 启动shim进程
+-	// 启动shim进程
+	shim, err := b.Start(ctx, topts, func() {
 		log.G(ctx).WithField("id", id).Info("shim disconnected")
 
 		cleanupAfterDeadShim(context.Background(), id, ns, m.tasks, m.events, b)
@@ -1620,100 +1631,169 @@ func (m *TaskManager) startShim(ctx context.Context, bundle *Bundle, id string, 
 ```
 >> b.start，shimBinary启动
 ```diff
-			func shimBinary(bundle *Bundle, runtime, containerdAddress string, containerdTTRPCAddress string) *binary {
-				return &binary{
-					bundle:                 bundle,
-					runtime:                runtime,
-					containerdAddress:      containerdAddress,
-					containerdTTRPCAddress: containerdTTRPCAddress,
-				}
-			}
-
-- 			// 启动shim v2
-			func (b *binary) Start(ctx context.Context, opts *types.Any, onClose func()) (_ *shim, err error) {
-				args := []string{"-id", b.bundle.ID}
-				switch logrus.GetLevel() {
-				case logrus.DebugLevel, logrus.TraceLevel:
-					args = append(args, "-debug")
-				}
-				args = append(args, "start")
-
-				cmd, err := client.Command(
-					ctx,
-					b.runtime,
-					b.containerdAddress,
-					b.containerdTTRPCAddress,
-					b.bundle.Path,
-					opts,
-					args...,
-				)
-				if err != nil {
-					return nil, err
-				}
-				// Windows needs a namespace when openShimLog
-				ns, _ := namespaces.Namespace(ctx)
-				shimCtx, cancelShimLog := context.WithCancel(namespaces.WithNamespace(context.Background(), ns))
-				defer func() {
-					if err != nil {
-						cancelShimLog()
-					}
-				}()
-				f, err := openShimLog(shimCtx, b.bundle, client.AnonDialer)
-				if err != nil {
-					return nil, errors.Wrap(err, "open shim log pipe")
-				}
-				defer func() {
-					if err != nil {
-						f.Close()
-					}
-				}()
-				// open the log pipe and block until the writer is ready
-				// this helps with synchronization of the shim
-				// copy the shim's logs to containerd's output
-				go func() {
-					defer f.Close()
-					_, err := io.Copy(os.Stderr, f)
-					// To prevent flood of error messages, the expected error
-					// should be reset, like os.ErrClosed or os.ErrNotExist, which
-					// depends on platform.
-					err = checkCopyShimLogError(ctx, err)
-					if err != nil {
-						log.G(ctx).WithError(err).Error("copy shim log")
-					}
-				}()
--				// 运行命令，并返回标准输出和错误				
-				out, err := cmd.CombinedOutput()
-				if err != nil {
-					return nil, errors.Wrapf(err, "%s", out)
-				}
-				address := strings.TrimSpace(string(out))
-				conn, err := client.Connect(address, client.AnonDialer)
-				if err != nil {
-					return nil, err
-				}
-				onCloseWithShimLog := func() {
-					onClose()
-					cancelShimLog()
-					f.Close()
-				}
--				// 创建client用来和v2 shim通信
-				client := ttrpc.NewClient(conn, ttrpc.WithOnClose(onCloseWithShimLog))
-				return &shim{
-					bundle: b.bundle,
-					client: client,
-					task:   task.NewTaskClient(client),
-				}, nil
-			}
-			
-// Connect to the provided address
-func Connect(address string, d func(string, time.Duration) (net.Conn, error)) (net.Conn, error) {
-	return d(address, 100*time.Second)
+func shimBinary(bundle *Bundle, runtime, containerdAddress string, containerdTTRPCAddress string) *binary {
+	return &binary{
+		bundle:                 bundle,
+		runtime:                runtime,
+		containerdAddress:      containerdAddress,
+		containerdTTRPCAddress: containerdTTRPCAddress,
+	}
 }
 
-func NewTaskClient(client *github_com_containerd_ttrpc.Client) TaskService {
-	return &taskClient{
-		client: client,
+- // 启动shim v2
+func (b *binary) Start(ctx context.Context, opts *types.Any, onClose func()) (_ *shim, err error) {
+	args := []string{"-id", b.bundle.ID}
+	switch logrus.GetLevel() {
+	case logrus.DebugLevel, logrus.TraceLevel:
+		args = append(args, "-debug")
 	}
+	args = append(args, "start")
+-	// 准备shim的命令行和参数
+	cmd, err := client.Command(
+		ctx,
+		b.runtime,
+		b.containerdAddress,
+		b.containerdTTRPCAddress,
+		b.bundle.Path,
+		opts,
+		args...,
+	)
+	if err != nil {
+		return nil, err
+	}
+	// Windows needs a namespace when openShimLog
+	ns, _ := namespaces.Namespace(ctx)
+	shimCtx, cancelShimLog := context.WithCancel(namespaces.WithNamespace(context.Background(), ns))
+	defer func() {
+		if err != nil {
+			cancelShimLog()
+		}
+	}()
+	f, err := openShimLog(shimCtx, b.bundle, client.AnonDialer)
+	if err != nil {
+		return nil, errors.Wrap(err, "open shim log pipe")
+	}
+	defer func() {
+		if err != nil {
+			f.Close()
+		}
+	}()
+	// open the log pipe and block until the writer is ready
+	// this helps with synchronization of the shim
+	// copy the shim's logs to containerd's output
+	go func() {
+		defer f.Close()
+		_, err := io.Copy(os.Stderr, f)
+		// To prevent flood of error messages, the expected error
+		// should be reset, like os.ErrClosed or os.ErrNotExist, which
+		// depends on platform.
+		err = checkCopyShimLogError(ctx, err)
+		if err != nil {
+			log.G(ctx).WithError(err).Error("copy shim log")
+		}
+	}()
+-	// 运行命令，并返回标准输出和错误	
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil, errors.Wrapf(err, "%s", out)
+	}
+	address := strings.TrimSpace(string(out))
+	conn, err := client.Connect(address, client.AnonDialer)
+	if err != nil {
+		return nil, err
+	}
+	onCloseWithShimLog := func() {
+		onClose()
+		cancelShimLog()
+		f.Close()
+	}
+-	// 创建client用来和v2 shim通信
+	client := ttrpc.NewClient(conn, ttrpc.WithOnClose(onCloseWithShimLog))
+	return &shim{
+		bundle: b.bundle,
+		client: client,
+		task:   task.NewTaskClient(client),
+	}, nil
+}
+```
+> client.command
+```diff
+// Command returns the shim command with the provided args and configuration
+func Command(ctx context.Context, runtime, containerdAddress, containerdTTRPCAddress, path string, opts *types.Any, cmdArgs ...string) (*exec.Cmd, error) {
+	ns, err := namespaces.NamespaceRequired(ctx)
+	if err != nil {
+		return nil, err
+	}
+	self, err := os.Executable()
+	if err != nil {
+		return nil, err
+	}
+	args := []string{
+		"-namespace", ns,
+		"-address", containerdAddress,
+		"-publish-binary", self,
+	}
+	args = append(args, cmdArgs...)
+	name := BinaryName(runtime)
+	if name == "" {
+		return nil, fmt.Errorf("invalid runtime name %s, correct runtime name should format like io.containerd.runc.v1", runtime)
+	}
+
+	var cmdPath string
+	cmdPathI, cmdPathFound := runtimePaths.Load(name)
+	if cmdPathFound {
+		cmdPath = cmdPathI.(string)
+	} else {
+		var lerr error
+		binaryPath := BinaryPath(runtime)
+		if _, serr := os.Stat(binaryPath); serr == nil {
+			cmdPath = binaryPath
+		}
+
+		if cmdPath == "" {
+			if cmdPath, lerr = exec.LookPath(name); lerr != nil {
+				if eerr, ok := lerr.(*exec.Error); ok {
+					if eerr.Err == exec.ErrNotFound {
+						// Match the calling binaries (containerd) path and see
+						// if they are side by side. If so, execute the shim
+						// found there.
+						testPath := filepath.Join(filepath.Dir(self), name)
+						if _, serr := os.Stat(testPath); serr == nil {
+							cmdPath = testPath
+						}
+						if cmdPath == "" {
+							return nil, errors.Wrapf(os.ErrNotExist, "runtime %q binary not installed %q", runtime, name)
+						}
+					}
+				}
+			}
+		}
+		cmdPath, err = filepath.Abs(cmdPath)
+		if err != nil {
+			return nil, err
+		}
+		if cmdPathI, cmdPathFound = runtimePaths.LoadOrStore(name, cmdPath); cmdPathFound {
+			// We didn't store cmdPath we loaded an already cached value. Use it.
+			cmdPath = cmdPathI.(string)
+		}
+	}
+
+	cmd := exec.CommandContext(ctx, cmdPath, args...)
+	cmd.Dir = path
+	cmd.Env = append(
+		os.Environ(),
+		"GOMAXPROCS=2",
+		fmt.Sprintf("%s=%s", ttrpcAddressEnv, containerdTTRPCAddress),
+	)
+	cmd.SysProcAttr = getSysProcAttr()
+	if opts != nil {
+		d, err := proto.Marshal(opts)
+		if err != nil {
+			return nil, err
+		}
+		cmd.Stdin = bytes.NewReader(d)
+	}
+	return cmd, nil
 }
 ```
 
