@@ -526,7 +526,8 @@ func NewContainer(ctx gocontext.Context, client *containerd.Client, context *cli
 +	return client.NewContainer(ctx, id, cOpts...)
 }
 ```
-- 在分析client.NewContainer之前，总结一下cOpts和opts定义的闭包操作
+
+>> 在分析client.NewContainer之前，总结一下cOpts和opts定义的闭包操作
 ```diff
 - 设置label
 + cOpts = append(cOpts, containerd.WithContainerLabels(commands.LabelArgs(context.StringSlice("label"))))
@@ -1036,7 +1037,7 @@ func containerFromRecord(client *Client, c containers.Container) *container {
 }
 ```
 
-- NewTask创建运行container的任务
+- NewTask创建运行container的任务。
 ```diff
 +		task, err := tasks.NewTask(ctx, client, container, context.String("checkpoint"), con, context.Bool("null-io"), context.String("log-uri"), ioOpts, opts...)
 ```
@@ -1052,7 +1053,7 @@ func NewTask(ctx gocontext.Context, client *containerd.Client, container contain
 		}
 		opts = append(opts, containerd.WithTaskCheckpoint(im))
 	}
--	// 根据命令行参数，创建ioCreaator闭包，处理终端stdin/stdout/stderr	
+-	// 根据命令行参数，创建ioCreator闭包，处理终端stdin/stdout/stderr	
 	var ioCreator cio.Creator
 	if con != nil {
 		if nullIO {
@@ -1106,7 +1107,6 @@ func WithStreams(stdin io.Reader, stdout, stderr io.Writer) Opt {
 		opt.Stderr = stderr
 	}
 }
-
 // WithTerminal sets the terminal option
 func WithTerminal(opt *Streams) {
 	opt.Terminal = true
@@ -1125,7 +1125,7 @@ func NewCreator(opts ...Opt) Creator {
 		streams.FIFODir = defaults.DefaultFIFODir
 	}
 	return func(id string) (IO, error) {
-		fifos, err := NewFIFOSetInDir(streams.FIFODir, id, streams.Terminal)
++		fifos, err := NewFIFOSetInDir(streams.FIFODir, id, streams.Terminal)
 		if err != nil {
 			return nil, err
 		}
@@ -1138,7 +1138,7 @@ func NewCreator(opts ...Opt) Creator {
 		if streams.Stderr == nil {
 			fifos.Stderr = ""
 		}
-		return copyIO(fifos, streams)
++		return copyIO(fifos, streams)
 	}
 }
 
@@ -1189,6 +1189,7 @@ func copyIO(fifos *FIFOSet, ioset *Streams) (*cio, error) {
 		return nil, err
 	}
 
+-	// 用3个go rouine协程分别处理stdin，stdout和stderr
 	if fifos.Stdin != "" {
 		go func() {
 			p := bufPool.Get().(*[]byte)
