@@ -102,6 +102,7 @@ const (
 	DefaultConfigDir = "/etc/containerd"
 )
 ```
+- 程序入口
 ```diff
 // Command runs a container
 var Command = cli.Command{
@@ -1246,6 +1247,7 @@ type task struct {
 }
 
 func (c *container) NewTask(ctx context.Context, ioCreate cio.Creator, opts ...NewTaskOpts) (_ Task, err error) {
+-	// 通过fifo接口接管console
 	i, err := ioCreate(c.id)
 	if err != nil {
 		return nil, err
@@ -1283,6 +1285,7 @@ func (c *container) NewTask(ctx context.Context, ioCreate cio.Creator, opts ...N
 		if err != nil {
 			return nil, err
 		}
+-		// 得到oci spec		
 		spec, err := c.Spec(ctx)
 		if err != nil {
 			return nil, err
@@ -1342,25 +1345,6 @@ func (c *container) NewTask(ctx context.Context, ioCreate cio.Creator, opts ...N
 	}
 	t.pid = response.Pid
 	return t, nil
-}
-```
-
-- task.start
-```diff
-func (t *task) Start(ctx context.Context) error {
--	// 调用服务器端task servce的Start
-	r, err := t.client.TaskService().Start(ctx, &tasks.StartRequest{
-		ContainerID: t.id,
-	})
-	if err != nil {
-		if t.io != nil {
-			t.io.Cancel()
-			t.io.Close()
-		}
-		return errdefs.FromGRPC(err)
-	}
-	t.pid = r.Pid
-	return nil
 }
 ```
 
@@ -2141,7 +2125,26 @@ func (r *Runc) Create(context context.Context, id, bundle string, opts *CreateOp
 }
 ```
 
-### 回到containerd端
+### 步骤三：启动runtime里的container
+- task.start
+```diff
+func (t *task) Start(ctx context.Context) error {
+-	// 调用服务器端task servce的Start
+	r, err := t.client.TaskService().Start(ctx, &tasks.StartRequest{
+		ContainerID: t.id,
+	})
+	if err != nil {
+		if t.io != nil {
+			t.io.Cancel()
+			t.io.Close()
+		}
+		return errdefs.FromGRPC(err)
+	}
+	t.pid = r.Pid
+	return nil
+}
+```
+
 - ***TaskService.Start***。外部service的Start -> 内部service的Start
 ```diff
 func (l *local) Start(ctx context.Context, r *api.StartRequest, _ ...grpc.CallOption) (*api.StartResponse, error) {
