@@ -53,7 +53,7 @@ func LoadPlugins(ctx context.Context, config *srvconfig.Config) ([]*plugin.Regis
 					continue
 				}
 -				// 得到所有的Snapshotter				
-+				snapshotters[name] = sn.(snapshots.Snapshotter)
+				snapshotters[name] = sn.(snapshots.Snapshotter)
 			}
 
 			shared := true
@@ -75,7 +75,7 @@ func LoadPlugins(ctx context.Context, config *srvconfig.Config) ([]*plugin.Regis
 			path := filepath.Join(ic.Root, "meta.db")
 			ic.Meta.Exports["path"] = path
 -			// 创建bolt数据库
-+			db, err := bolt.Open(path, 0644, nil)
+			db, err := bolt.Open(path, 0644, nil)
 			if err != nil {
 				return nil, err
 			}
