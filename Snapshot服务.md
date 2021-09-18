@@ -458,7 +458,7 @@ func NewSnapshotter(root string, opts ...Opt) (snapshots.Snapshotter, error) {
 }
 ```
 ### 底层服务接口实现
-- Stat
+- ***Stat***
 ```diff
 // Stat returns the info for an active or committed snapshot by name or
 // key.
@@ -486,7 +486,7 @@ func (o *snapshotter) Stat(ctx context.Context, key string) (snapshots.Info, err
 	return info, nil
 }
 ```
-> storage.GetInfo(ctx, info.Name)
+> *storage.GetInfo(ctx, info.Name)*
 ```diff
 // GetInfo returns the snapshot Info directly from the metadata. Requires a
 // context with a storage transaction.
@@ -510,7 +510,7 @@ func GetInfo(ctx context.Context, key string) (string, snapshots.Info, snapshots
 }
 ```
 
-- Update
+- ***Update***
 ```diff
 func (o *snapshotter) Update(ctx context.Context, info snapshots.Info, fieldpaths ...string) (snapshots.Info, error) {
 	ctx, t, err := o.ms.TransactionContext(ctx, true)
@@ -542,7 +542,7 @@ func (o *snapshotter) Update(ctx context.Context, info snapshots.Info, fieldpath
 	return info, nil
 }
 ```
-> storage.UpdateInfo(ctx, info, fieldpaths...)
+> *storage.UpdateInfo(ctx, info, fieldpaths...)*
 ```diff
 // UpdateInfo updates an existing snapshot info's data
 func UpdateInfo(ctx context.Context, info snapshots.Info, fieldpaths ...string) (snapshots.Info, error) {
@@ -594,7 +594,7 @@ func UpdateInfo(ctx context.Context, info snapshots.Info, fieldpaths ...string) 
 	return updated, nil
 }
 ```
-- Usage
+- ***Usage***
 ```diff
 // Usage returns the resources taken by the snapshot identified by key.
 //
@@ -628,12 +628,14 @@ func (o *snapshotter) Usage(ctx context.Context, key string) (snapshots.Usage, e
 	return usage, nil
 }
 ```
-- Prepare
+- ***Prepare***
 ```
 func (o *snapshotter) Prepare(ctx context.Context, key, parent string, opts ...snapshots.Opt) ([]mount.Mount, error) {
 +	return o.createSnapshot(ctx, snapshots.KindActive, key, parent, opts)
 }
-
+```
+> *o.createSnapshot(ctx, snapshots.KindActive, key, parent, opts)*
+```diff
 func (o *snapshotter) createSnapshot(ctx context.Context, kind snapshots.Kind, key, parent string, opts []snapshots.Opt) (_ []mount.Mount, err error) {
 	ctx, t, err := o.ms.TransactionContext(ctx, true)
 	if err != nil {
@@ -708,7 +710,9 @@ func (o *snapshotter) createSnapshot(ctx context.Context, kind snapshots.Kind, k
 
 +	return o.mounts(s), nil
 }
-
+```
+> *o.mounts(s)*
+```diff
 func (o *snapshotter) mounts(s storage.Snapshot) []mount.Mount {
 	if len(s.ParentIDs) == 0 {
 		// if we only have one layer/no parents then just return a bind mount as overlay
@@ -775,14 +779,14 @@ func (o *snapshotter) mounts(s storage.Snapshot) []mount.Mount {
 }
 ```
 
-- View
+- ***View***
 ```diff
 func (o *snapshotter) View(ctx context.Context, key, parent string, opts ...snapshots.Opt) ([]mount.Mount, error) {
 +	return o.createSnapshot(ctx, snapshots.KindView, key, parent, opts)
 }
 ```
 
-- Mounts
+- ***Mounts***
 ```diff
 // Mounts returns the mounts for the transaction identified by key. Can be
 // called on an read-write or readonly transaction.
@@ -802,7 +806,7 @@ func (o *snapshotter) Mounts(ctx context.Context, key string) ([]mount.Mount, er
 }
 ```
 
-- Commit
+- ***Commit***
 ```diff
 func (o *snapshotter) Commit(ctx context.Context, name, key string, opts ...snapshots.Opt) error {
 	ctx, t, err := o.ms.TransactionContext(ctx, true)
@@ -819,7 +823,7 @@ func (o *snapshotter) Commit(ctx context.Context, name, key string, opts ...snap
 	}()
 
 	// grab the existing id
-	id, _, _, err := storage.GetInfo(ctx, key)
++	id, _, _, err := storage.GetInfo(ctx, key)
 	if err != nil {
 		return err
 	}
@@ -829,14 +833,90 @@ func (o *snapshotter) Commit(ctx context.Context, name, key string, opts ...snap
 		return err
 	}
 
-	if _, err = storage.CommitActive(ctx, key, name, snapshots.Usage(usage), opts...); err != nil {
++	if _, err = storage.CommitActive(ctx, key, name, snapshots.Usage(usage), opts...); err != nil {
 		return errors.Wrap(err, "failed to commit snapshot")
 	}
 	return t.Commit()
 }
 ```
+> *storage.CommitActive(ctx, key, name, snapshots.Usage(usage), opts...)*
+```diff
+// CommitActive renames the active snapshot transaction referenced by `key`
+// as a committed snapshot referenced by `Name`. The resulting snapshot  will be
+// committed and readonly. The `key` reference will no longer be available for
+// lookup or removal. The returned string identifier for the committed snapshot
+// is the same identifier of the original active snapshot. The provided context
+// must contain a writable transaction.
+func CommitActive(ctx context.Context, key, name string, usage snapshots.Usage, opts ...snapshots.Opt) (string, error) {
+	var (
+		id   uint64
+		base snapshots.Info
+	)
+	for _, opt := range opts {
+		if err := opt(&base); err != nil {
+			return "", err
+		}
+	}
 
-- Remove
+	if err := withBucket(ctx, func(ctx context.Context, bkt, pbkt *bolt.Bucket) error {
+		dbkt, err := bkt.CreateBucket([]byte(name))
+		if err != nil {
+			if err == bolt.ErrBucketExists {
+				err = errdefs.ErrAlreadyExists
+			}
+			return errors.Wrapf(err, "committed snapshot %v", name)
+		}
+		sbkt := bkt.Bucket([]byte(key))
+		if sbkt == nil {
+			return errors.Wrapf(errdefs.ErrNotFound, "failed to get active snapshot %q", key)
+		}
+
+		var si snapshots.Info
+		if err := readSnapshot(sbkt, &id, &si); err != nil {
+			return errors.Wrapf(err, "failed to read active snapshot %q", key)
+		}
+
+		if si.Kind != snapshots.KindActive {
+			return errors.Wrapf(errdefs.ErrFailedPrecondition, "snapshot %q is not active", key)
+		}
+		si.Kind = snapshots.KindCommitted
+		si.Created = time.Now().UTC()
+		si.Updated = si.Created
+
+		// Replace labels, do not inherit
+		si.Labels = base.Labels
+
+		if err := putSnapshot(dbkt, id, si); err != nil {
+			return err
+		}
+		if err := putUsage(dbkt, usage); err != nil {
+			return err
+		}
+		if err := bkt.DeleteBucket([]byte(key)); err != nil {
+			return errors.Wrapf(err, "failed to delete active snapshot %q", key)
+		}
+		if si.Parent != "" {
+			spbkt := bkt.Bucket([]byte(si.Parent))
+			if spbkt == nil {
+				return errors.Wrapf(errdefs.ErrNotFound, "missing parent %q of snapshot %q", si.Parent, key)
+			}
+			pid := readID(spbkt)
+
+			// Updates parent back link to use new key
+			if err := pbkt.Put(parentKey(pid, id), []byte(name)); err != nil {
+				return errors.Wrapf(err, "failed to update parent link %q from %q to %q", pid, key, name)
+			}
+		}
+
+		return nil
+	}); err != nil {
+		return "", err
+	}
+
+	return fmt.Sprintf("%d", id), nil
+}
+```
+- ***Remove***
 ```diff
 // Remove abandons the snapshot identified by key. The snapshot will
 // immediately become unavailable and unrecoverable. Disk space will
@@ -885,7 +965,7 @@ func (o *snapshotter) Remove(ctx context.Context, key string) (err error) {
 }
 ```
 
-- Walk
+- ***Walk***
 ```diff
 // Walk the snapshots.
 func (o *snapshotter) Walk(ctx context.Context, fn snapshots.WalkFunc, fs ...string) error {
@@ -907,10 +987,46 @@ func (o *snapshotter) Walk(ctx context.Context, fn snapshots.WalkFunc, fs ...str
 			return fn(ctx, info)
 		}, fs...)
 	}
-	return storage.WalkInfo(ctx, fn, fs...)
++	return storage.WalkInfo(ctx, fn, fs...)
 }
 ```
-- Others
+
+> *storage.WalkInfo(ctx, fn, fs...)*
+```diff
+// WalkInfo iterates through all metadata Info for the stored snapshots and
+// calls the provided function for each. Requires a context with a storage
+// transaction.
+func WalkInfo(ctx context.Context, fn snapshots.WalkFunc, fs ...string) error {
+	filter, err := filters.ParseAll(fs...)
+	if err != nil {
+		return err
+	}
+	// TODO: allow indexes (name, parent, specific labels)
+	return withBucket(ctx, func(ctx context.Context, bkt, pbkt *bolt.Bucket) error {
+		return bkt.ForEach(func(k, v []byte) error {
+			// skip non buckets
+			if v != nil {
+				return nil
+			}
+			var (
+				sbkt = bkt.Bucket(k)
+				si   = snapshots.Info{
+					Name: string(k),
+				}
+			)
+			if err := readSnapshot(sbkt, nil, &si); err != nil {
+				return err
+			}
+			if !filter.Match(adaptSnapshot(si)) {
+				return nil
+			}
+
+			return fn(ctx, si)
+		})
+	})
+}
+```
+- ***Others***
 ```diff
 // Cleanup cleans up disk resources from removed or abandoned snapshots
 func (o *snapshotter) Cleanup(ctx context.Context) error {
