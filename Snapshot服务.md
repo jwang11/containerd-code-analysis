@@ -486,6 +486,30 @@ func (o *snapshotter) Stat(ctx context.Context, key string) (snapshots.Info, err
 	return info, nil
 }
 ```
+> storage.GetInfo(ctx, info.Name)
+```diff
+// GetInfo returns the snapshot Info directly from the metadata. Requires a
+// context with a storage transaction.
+func GetInfo(ctx context.Context, key string) (string, snapshots.Info, snapshots.Usage, error) {
+	var (
+		id uint64
+		su snapshots.Usage
+		si = snapshots.Info{
+			Name: key,
+		}
+	)
+	err := withSnapshotBucket(ctx, key, func(ctx context.Context, bkt, pbkt *bolt.Bucket) error {
+		getUsage(bkt, &su)
+		return readSnapshot(bkt, &id, &si)
+	})
+	if err != nil {
+		return "", snapshots.Info{}, snapshots.Usage{}, err
+	}
+
+	return fmt.Sprintf("%d", id), si, su, nil
+}
+```
+
 - Update
 ```diff
 func (o *snapshotter) Update(ctx context.Context, info snapshots.Info, fieldpaths ...string) (snapshots.Info, error) {
@@ -494,7 +518,7 @@ func (o *snapshotter) Update(ctx context.Context, info snapshots.Info, fieldpath
 		return snapshots.Info{}, err
 	}
 
-	info, err = storage.UpdateInfo(ctx, info, fieldpaths...)
++	info, err = storage.UpdateInfo(ctx, info, fieldpaths...)
 	if err != nil {
 		t.Rollback()
 		return snapshots.Info{}, err
@@ -505,7 +529,7 @@ func (o *snapshotter) Update(ctx context.Context, info snapshots.Info, fieldpath
 	}
 
 	if o.upperdirLabel {
-		id, _, _, err := storage.GetInfo(ctx, info.Name)
++		id, _, _, err := storage.GetInfo(ctx, info.Name)
 		if err != nil {
 			return snapshots.Info{}, err
 		}
@@ -518,7 +542,58 @@ func (o *snapshotter) Update(ctx context.Context, info snapshots.Info, fieldpath
 	return info, nil
 }
 ```
+> storage.UpdateInfo(ctx, info, fieldpaths...)
+```diff
+// UpdateInfo updates an existing snapshot info's data
+func UpdateInfo(ctx context.Context, info snapshots.Info, fieldpaths ...string) (snapshots.Info, error) {
+	updated := snapshots.Info{
+		Name: info.Name,
+	}
+	err := withBucket(ctx, func(ctx context.Context, bkt, pbkt *bolt.Bucket) error {
+		sbkt := bkt.Bucket([]byte(info.Name))
+		if sbkt == nil {
+			return errors.Wrap(errdefs.ErrNotFound, "snapshot does not exist")
+		}
+		if err := readSnapshot(sbkt, nil, &updated); err != nil {
+			return err
+		}
 
+		if len(fieldpaths) > 0 {
+			for _, path := range fieldpaths {
+				if strings.HasPrefix(path, "labels.") {
+					if updated.Labels == nil {
+						updated.Labels = map[string]string{}
+					}
+
+					key := strings.TrimPrefix(path, "labels.")
+					updated.Labels[key] = info.Labels[key]
+					continue
+				}
+
+				switch path {
+				case "labels":
+					updated.Labels = info.Labels
+				default:
+					return errors.Wrapf(errdefs.ErrInvalidArgument, "cannot update %q field on snapshot %q", path, info.Name)
+				}
+			}
+		} else {
+			// Set mutable fields
+			updated.Labels = info.Labels
+		}
+		updated.Updated = time.Now().UTC()
+		if err := boltutil.WriteTimestamps(sbkt, updated.Created, updated.Updated); err != nil {
+			return err
+		}
+
+		return boltutil.WriteLabels(sbkt, updated.Labels)
+	})
+	if err != nil {
+		return snapshots.Info{}, err
+	}
+	return updated, nil
+}
+```
 - Usage
 ```diff
 // Usage returns the resources taken by the snapshot identified by key.
@@ -631,33 +706,6 @@ func (o *snapshotter) createSnapshot(ctx context.Context, kind snapshots.Kind, k
 		return nil, errors.Wrap(err, "commit failed")
 	}
 
-	return o.mounts(s), nil
-}
-```
-
-- View
-```diff
-func (o *snapshotter) View(ctx context.Context, key, parent string, opts ...snapshots.Opt) ([]mount.Mount, error) {
-+	return o.createSnapshot(ctx, snapshots.KindView, key, parent, opts)
-}
-```
-
-- Mounts
-```diff
-// Mounts returns the mounts for the transaction identified by key. Can be
-// called on an read-write or readonly transaction.
-//
-// This can be used to recover mounts after calling View or Prepare.
-func (o *snapshotter) Mounts(ctx context.Context, key string) ([]mount.Mount, error) {
-	ctx, t, err := o.ms.TransactionContext(ctx, false)
-	if err != nil {
-		return nil, err
-	}
-	s, err := storage.GetSnapshot(ctx, key)
-	t.Rollback()
-	if err != nil {
-		return nil, errors.Wrap(err, "failed to get active mount")
-	}
 +	return o.mounts(s), nil
 }
 
@@ -724,6 +772,33 @@ func (o *snapshotter) mounts(s storage.Snapshot) []mount.Mount {
 		},
 	}
 
+}
+```
+
+- View
+```diff
+func (o *snapshotter) View(ctx context.Context, key, parent string, opts ...snapshots.Opt) ([]mount.Mount, error) {
++	return o.createSnapshot(ctx, snapshots.KindView, key, parent, opts)
+}
+```
+
+- Mounts
+```diff
+// Mounts returns the mounts for the transaction identified by key. Can be
+// called on an read-write or readonly transaction.
+//
+// This can be used to recover mounts after calling View or Prepare.
+func (o *snapshotter) Mounts(ctx context.Context, key string) ([]mount.Mount, error) {
+	ctx, t, err := o.ms.TransactionContext(ctx, false)
+	if err != nil {
+		return nil, err
+	}
+	s, err := storage.GetSnapshot(ctx, key)
+	t.Rollback()
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to get active mount")
+	}
++	return o.mounts(s), nil
 }
 ```
 
@@ -914,8 +989,6 @@ func (o *snapshotter) prepareDirectory(ctx context.Context, snapshotDir string, 
 
 	return td, nil
 }
-
-
 
 func (o *snapshotter) upperPath(id string) string {
 	return filepath.Join(o.root, "snapshots", id, "fs")
