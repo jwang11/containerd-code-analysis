@@ -622,19 +622,19 @@ func Graph(filter DisableFilter) (ordered []*Registration) {
 	
 	// register services after all plugins have been initialized
 	for _, service := range grpcServices {
--		// 调用每个service的Register，完成最后注册	
+-		// 调用每个service的Register，完成gRPC服务的最后注册	
 		if err := service.Register(grpcServer); err != nil {
 			return nil, err
 		}
 	}
 	for _, service := range ttrpcServices {
--		// 调用每个service的Register，完成最后注册
+-		// 调用每个service的Register，完成ttRPC服务的最后注册
 		if err := service.RegisterTTRPC(ttrpcServer); err != nil {
 			return nil, err
 		}
 	}
 	for _, service := range tcpServices {
--		// 调用每个service的Register，完成最后注册	
+-		// 调用每个service的Register，完成tcp服务的最后注册	
 		if err := service.RegisterTCP(tcpServer); err != nil {
 			return nil, err
 		}
