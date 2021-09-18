@@ -4,11 +4,11 @@
 
 ### 外部服务Snapshot GRPC注册
 [services/snapshots/service.go](https://github.com/containerd/containerd/blob/main/services/snapshots/service.go)
-```
+```diff
 func init() {
 	plugin.Register(&plugin.Registration{
-		Type: plugin.GRPCPlugin,
-		ID:   "snapshots",
++		Type: plugin.GRPCPlugin,
++		ID:   "snapshots",
 		Requires: []plugin.Type{
 			plugin.ServicePlugin,
 		},
@@ -21,7 +21,7 @@ func newService(ic *plugin.InitContext) (interface{}, error) {
 	if err != nil {
 		return nil, err
 	}
-	p, ok := plugins[services.SnapshotsService]
++	p, ok := plugins[services.SnapshotsService]
 	if !ok {
 		return nil, errors.New("snapshots service not found")
 	}
@@ -29,8 +29,8 @@ func newService(ic *plugin.InitContext) (interface{}, error) {
 	if err != nil {
 		return nil, err
 	}
-	ss := i.(map[string]snapshots.Snapshotter)
-	return &service{ss: ss}, nil
++	ss := i.(map[string]snapshots.Snapshotter)
++	return &service{ss: ss}, nil
 }
 ```
 
@@ -44,8 +44,8 @@ type snapshotter struct {
 
 func init() {
 	plugin.Register(&plugin.Registration{
-		Type: plugin.ServicePlugin,
-		ID:   services.SnapshotsService,
++		Type: plugin.ServicePlugin,
++		ID:   services.SnapshotsService,
 		Requires: []plugin.Type{
 			plugin.EventPlugin,
 			plugin.MetadataPlugin,
@@ -63,7 +63,7 @@ func init() {
 			db := m.(*metadata.DB)
 			ss := make(map[string]snapshots.Snapshotter)
 			for n, sn := range db.Snapshotters() {
-				ss[n] = newSnapshotter(sn, ep.(events.Publisher))
++				ss[n] = newSnapshotter(sn, ep.(events.Publisher))
 			}
 			return ss, nil
 		},
@@ -77,8 +77,9 @@ func newSnapshotter(sn snapshots.Snapshotter, publisher events.Publisher) snapsh
 	}
 }
 
-+ //内部服务snapshoter的Prepare
+- //内部服务snapshoter的Prepare
 func (s *snapshotter) Prepare(ctx context.Context, key, parent string, opts ...snapshots.Opt) ([]mount.Mount, error) {
+-	// 调用底层服务的prepare
 	mounts, err := s.Snapshotter.Prepare(ctx, key, parent, opts...)
 	if err != nil {
 		return nil, err
@@ -92,8 +93,9 @@ func (s *snapshotter) Prepare(ctx context.Context, key, parent string, opts ...s
 	return mounts, nil
 }
 
-+ //内部服务snapshoter的Commit
+- //内部服务snapshoter的Commit
 func (s *snapshotter) Commit(ctx context.Context, name, key string, opts ...snapshots.Opt) error {
+-	// 调用底层服务的Commit
 	if err := s.Snapshotter.Commit(ctx, name, key, opts...); err != nil {
 		return err
 	}
@@ -103,8 +105,9 @@ func (s *snapshotter) Commit(ctx context.Context, name, key string, opts ...snap
 	})
 }
 
-+ //内部服务snapshoter的Remove
+- //内部服务snapshoter的Remove
 func (s *snapshotter) Remove(ctx context.Context, key string) error {
+-	// 调用底层服务的Remove
 	if err := s.Snapshotter.Remove(ctx, key); err != nil {
 		return err
 	}
@@ -116,11 +119,11 @@ func (s *snapshotter) Remove(ctx context.Context, key string) error {
 
 ### 底层服务SnapshotPlugin的注册
 [snapshots/overlay/plugin/plugin.go](https://github.com/containerd/containerd/blob/main/snapshots/overlay/plugin/plugin.go)
-```
+```diff
 func init() {
 	plugin.Register(&plugin.Registration{
-		Type:   plugin.SnapshotPlugin,
-		ID:     "overlayfs",
++		Type:   plugin.SnapshotPlugin,
++		ID:     "overlayfs",
 		Config: &Config{},
 		InitFn: func(ic *plugin.InitContext) (interface{}, error) {
 			ic.Meta.Platforms = append(ic.Meta.Platforms, platforms.DefaultSpec())
@@ -141,7 +144,7 @@ func init() {
 			}
 
 			ic.Meta.Exports["root"] = root
-			return overlay.NewSnapshotter(root, append(oOpts, overlay.AsynchronousRemove)...)
++			return overlay.NewSnapshotter(root, append(oOpts, overlay.AsynchronousRemove)...)
 		},
 	})
 }
@@ -153,7 +156,7 @@ func init() {
 type service struct {
 	ss map[string]snapshots.Snapshotter
 }
-+ //获取Snapshot的底层实现，如overlay
+- //获取Snapshot的底层实现，如overlay
 func (s *service) getSnapshotter(name string) (snapshots.Snapshotter, error) {
 	if name == "" {
 		return nil, errdefs.ToGRPCf(errdefs.ErrInvalidArgument, "snapshotter argument missing")
@@ -167,7 +170,7 @@ func (s *service) getSnapshotter(name string) (snapshots.Snapshotter, error) {
 }
 ```
 - 需实现的外部接口
-```
+```diff
 type SnapshotsServer interface {
 	Prepare(context.Context, *PrepareSnapshotRequest) (*PrepareSnapshotResponse, error)
 	View(context.Context, *ViewSnapshotRequest) (*ViewSnapshotResponse, error)
@@ -182,9 +185,10 @@ type SnapshotsServer interface {
 }
 ```
 - Prepare
-```
+```diff
 func (s *service) Prepare(ctx context.Context, pr *snapshotsapi.PrepareSnapshotRequest) (*snapshotsapi.PrepareSnapshotResponse, error) {
 	log.G(ctx).WithField("parent", pr.Parent).WithField("key", pr.Key).Debugf("prepare snapshot")
+-	// 根据Reqeust里的snapshotter名字，获取sn对象	
 	sn, err := s.getSnapshotter(pr.Snapshotter)
 	if err != nil {
 		return nil, err
@@ -194,6 +198,7 @@ func (s *service) Prepare(ctx context.Context, pr *snapshotsapi.PrepareSnapshotR
 	if pr.Labels != nil {
 		opts = append(opts, snapshots.WithLabels(pr.Labels))
 	}
+-	// 调用内部服务Prepare方法	
 	mounts, err := sn.Prepare(ctx, pr.Key, pr.Parent, opts...)
 	if err != nil {
 		return nil, errdefs.ToGRPC(err)
@@ -205,7 +210,7 @@ func (s *service) Prepare(ctx context.Context, pr *snapshotsapi.PrepareSnapshotR
 }
 ```
 -  View
-```
+```diff
 func (s *service) View(ctx context.Context, pr *snapshotsapi.ViewSnapshotRequest) (*snapshotsapi.ViewSnapshotResponse, error) {
 	log.G(ctx).WithField("parent", pr.Parent).WithField("key", pr.Key).Debugf("prepare view snapshot")
 	sn, err := s.getSnapshotter(pr.Snapshotter)
@@ -226,14 +231,14 @@ func (s *service) View(ctx context.Context, pr *snapshotsapi.ViewSnapshotRequest
 }
 ```
 - Mounts
-```
+```diff
 func (s *service) Mounts(ctx context.Context, mr *snapshotsapi.MountsRequest) (*snapshotsapi.MountsResponse, error) {
 	log.G(ctx).WithField("key", mr.Key).Debugf("get snapshot mounts")
 	sn, err := s.getSnapshotter(mr.Snapshotter)
 	if err != nil {
 		return nil, err
 	}
-
+-	// 根据SnapshotKey，返回相应的mounts
 	mounts, err := sn.Mounts(ctx, mr.Key)
 	if err != nil {
 		return nil, errdefs.ToGRPC(err)
@@ -245,7 +250,7 @@ func (s *service) Mounts(ctx context.Context, mr *snapshotsapi.MountsRequest) (*
 ```
 
 - Commit
-```
+```diff
 func (s *service) Commit(ctx context.Context, cr *snapshotsapi.CommitSnapshotRequest) (*ptypes.Empty, error) {
 	log.G(ctx).WithField("key", cr.Key).WithField("name", cr.Name).Debugf("commit snapshot")
 	sn, err := s.getSnapshotter(cr.Snapshotter)
@@ -257,6 +262,7 @@ func (s *service) Commit(ctx context.Context, cr *snapshotsapi.CommitSnapshotReq
 	if cr.Labels != nil {
 		opts = append(opts, snapshots.WithLabels(cr.Labels))
 	}
+-	// 调用底层实现的Commit	
 	if err := sn.Commit(ctx, cr.Name, cr.Key, opts...); err != nil {
 		return nil, errdefs.ToGRPC(err)
 	}
