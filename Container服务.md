@@ -1,5 +1,5 @@
 # Container服务
-> container服务提供对container的运行管理
+> container服务提供对container对象的管理，包括增删改标签（label），但不包括执行
 
 ```
 NAME:
@@ -45,7 +45,7 @@ func init() {
 			if err != nil {
 				return nil, err
 			}
-			return &service{local: i.(api.ContainersClient)}, nil
++			return &service{local: i.(api.ContainersClient)}, nil
 		},
 	})
 }
@@ -242,6 +242,7 @@ func (l *local) withStoreUpdate(ctx context.Context, fn func(ctx context.Context
 // NewContainerStore returns a Store backed by an underlying bolt DB
 func NewContainerStore(db *DB) containers.Store {
 	return &containerStore{
+-		// 这个db是metadata.DB，实现了transaction接口，可以直接bolt操作。	
 		db: db,
 	}
 }
