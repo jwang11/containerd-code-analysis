@@ -21,7 +21,7 @@ OPTIONS:
    --help, -h  show help
 ```
 
-### Container外部服务
+### Container外部服务注册
 [services/containers/service.go](https://github.com/containerd/containerd/blob/main/services/containers/service.go)
 ```diff
 func init() {
@@ -51,7 +51,65 @@ func init() {
 }
 ```
 
-### Container内部服务
+### 外部服务实现
+```diff
+type service struct {
+	local api.ContainersClient
+}
+
+var _ api.ContainersServer = &service{}
+
+func (s *service) Register(server *grpc.Server) error {
+	api.RegisterContainersServer(server, s)
+	return nil
+}
+
+func (s *service) Get(ctx context.Context, req *api.GetContainerRequest) (*api.GetContainerResponse, error) {
++	return s.local.Get(ctx, req)
+}
+
+func (s *service) List(ctx context.Context, req *api.ListContainersRequest) (*api.ListContainersResponse, error) {
++	return s.local.List(ctx, req)
+}
+
+func (s *service) ListStream(req *api.ListContainersRequest, stream api.Containers_ListStreamServer) error {
++	containers, err := s.local.ListStream(stream.Context(), req)
+	if err != nil {
+		return err
+	}
+	for {
+		select {
+		case <-stream.Context().Done():
+			return nil
+		default:
+			c, err := containers.Recv()
+			if err != nil {
+				if err == io.EOF {
+					return nil
+				}
+				return err
+			}
+			if err := stream.Send(c); err != nil {
+				return err
+			}
+		}
+	}
+}
+
+func (s *service) Create(ctx context.Context, req *api.CreateContainerRequest) (*api.CreateContainerResponse, error) {
++	return s.local.Create(ctx, req)
+}
+
+func (s *service) Update(ctx context.Context, req *api.UpdateContainerRequest) (*api.UpdateContainerResponse, error) {
++	return s.local.Update(ctx, req)
+}
+
+func (s *service) Delete(ctx context.Context, req *api.DeleteContainerRequest) (*ptypes.Empty, error) {
++	return s.local.Delete(ctx, req)
+}
+```
+
+### Container内部服务注册
 ```diff
 func init() {
 	plugin.Register(&plugin.Registration{
@@ -91,7 +149,7 @@ type local struct {
 }
 ```
 
-### Container内部服务
+### Container内部服务实现
 ```diff
 func (l *local) Get(ctx context.Context, req *api.GetContainerRequest, _ ...grpc.CallOption) (*api.GetContainerResponse, error) {
 	var resp api.GetContainerResponse
