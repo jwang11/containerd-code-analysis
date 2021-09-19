@@ -1,5 +1,6 @@
 # Container服务
-> container服务提供对container对象的管理，包括增删改标签（label），但不包括执行
+> container服务提供对container对象的管理，包括增删改标签（label），但不包括执行<br>
+> container的信息记录在metedata的bolt库里
 
 ```
 NAME:
