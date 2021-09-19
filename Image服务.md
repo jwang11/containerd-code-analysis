@@ -1,5 +1,5 @@
 # Images服务
-> Image服务提供镜像的pull，push等操作
+> Image服务提供镜像的list，create，update，delete等操作，但不负责pull和push
 
 ### 外部服务GPRCPlugin的注册
 - 依赖ServicePlugin中的services.ImagesService<br>
@@ -7,8 +7,8 @@
 ```diff
 func init() {
 	plugin.Register(&plugin.Registration{
-		Type: plugin.GRPCPlugin,
-		ID:   "images",
++		Type: plugin.GRPCPlugin,
++		ID:   "images",
 		Requires: []plugin.Type{
 			plugin.ServicePlugin,
 		},
@@ -30,7 +30,7 @@ func init() {
 	})
 }
 ```
-- ***外部服务接口***
+- ***外部服务实现***
 ```diff
 type service struct {
 	local imagesapi.ImagesClient
@@ -69,8 +69,8 @@ func (s *service) Delete(ctx context.Context, req *imagesapi.DeleteImageRequest)
 ```diff
 func init() {
 	plugin.Register(&plugin.Registration{
-		Type: plugin.ServicePlugin,
-		ID:   services.ImagesService,
++		Type: plugin.ServicePlugin,
++		ID:   services.ImagesService,
 		Requires: []plugin.Type{
 			plugin.MetadataPlugin,
 			plugin.GCPlugin,
@@ -85,7 +85,7 @@ func init() {
 				return nil, err
 			}
 
-+			return &local{
+			return &local{
 +				store:     metadata.NewImageStore(m.(*metadata.DB)),
 				publisher: ic.Events,
 				gc:        g.(gcScheduler),
@@ -106,7 +106,7 @@ type local struct {
 var _ imagesapi.ImagesClient = &local{}
 
 func (l *local) Get(ctx context.Context, req *imagesapi.GetImageRequest, _ ...grpc.CallOption) (*imagesapi.GetImageResponse, error) {
-	image, err := l.store.Get(ctx, req.Name)
++	image, err := l.store.Get(ctx, req.Name)
 	if err != nil {
 		return nil, errdefs.ToGRPC(err)
 	}
@@ -118,7 +118,7 @@ func (l *local) Get(ctx context.Context, req *imagesapi.GetImageRequest, _ ...gr
 }
 
 func (l *local) List(ctx context.Context, req *imagesapi.ListImagesRequest, _ ...grpc.CallOption) (*imagesapi.ListImagesResponse, error) {
-	images, err := l.store.List(ctx, req.Filters...)
++	images, err := l.store.List(ctx, req.Filters...)
 	if err != nil {
 		return nil, errdefs.ToGRPC(err)
 	}
@@ -138,7 +138,7 @@ func (l *local) Create(ctx context.Context, req *imagesapi.CreateImageRequest, _
 		image = imageFromProto(&req.Image)
 		resp  imagesapi.CreateImageResponse
 	)
-	created, err := l.store.Create(ctx, image)
++	created, err := l.store.Create(ctx, image)
 	if err != nil {
 		return nil, errdefs.ToGRPC(err)
 	}
@@ -191,7 +191,7 @@ func (l *local) Update(ctx context.Context, req *imagesapi.UpdateImageRequest, _
 func (l *local) Delete(ctx context.Context, req *imagesapi.DeleteImageRequest, _ ...grpc.CallOption) (*ptypes.Empty, error) {
 	log.G(ctx).WithField("name", req.Name).Debugf("delete image")
 
-	if err := l.store.Delete(ctx, req.Name); err != nil {
++	if err := l.store.Delete(ctx, req.Name); err != nil {
 		return nil, errdefs.ToGRPC(err)
 	}
 
