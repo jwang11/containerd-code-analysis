@@ -1,7 +1,7 @@
 # Content服务
 > Content是提供数据存储和查询的服务，主要包括index、manifests、config、image layer。
 
-### Content外部服务GRPCPlugin注册
+### 外部服务注册
 ```diff
 func init() {
 	plugin.Register(&plugin.Registration{
