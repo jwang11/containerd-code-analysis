@@ -101,7 +101,7 @@ can be used and modified as necessary as a custom configuration.`
 		}).Info("starting containerd")
 
 -		// Server的创建及初始化
-+		server, err := server.New(ctx, config)
+		server, err := server.New(ctx, config)
 		if err != nil {
 			return err
 		}
@@ -118,22 +118,25 @@ can be used and modified as necessary as a custom configuration.`
 		tl, err := sys.GetLocalListener(config.TTRPC.Address, config.TTRPC.UID, config.TTRPC.GID)
 		if err != nil {
 			return errors.Wrapf(err, "failed to get listener for main ttrpc endpoint")
-		}		
-+		serve(ctx, tl, server.ServeTTRPC)
+		}
+-		// 监听ttrpc Server端口		
+		serve(ctx, tl, server.ServeTTRPC)
 
 		if config.GRPC.TCPAddress != "" {
 			l, err := net.Listen("tcp", config.GRPC.TCPAddress)
 			if err != nil {
 				return errors.Wrapf(err, "failed to get listener for TCP grpc endpoint")
 			}
-+			serve(ctx, l, server.ServeTCP)
+-			// 监听tcp Server端口			
+			serve(ctx, l, server.ServeTCP)
 		}
 		// setup the main grpc endpoint
 		l, err := sys.GetLocalListener(config.GRPC.Address, config.GRPC.UID, config.GRPC.GID)
 		if err != nil {
 			return errors.Wrapf(err, "failed to get listener for main endpoint")
 		}
-+		serve(ctx, l, server.ServeGRPC)
+-		// 监听gPRC Server端口		
+		serve(ctx, l, server.ServeGRPC)
 
 		if err := notifyReady(ctx); err != nil {
 			log.G(ctx).WithError(err).Warn("notify ready failed")
@@ -164,7 +167,7 @@ func New(ctx context.Context, config *srvconfig.Config) (*Server, error) {
 	}
 ...
 -	// 自动在指定路径load plugins
-+	plugins, err := LoadPlugins(ctx, config)
+	plugins, err := LoadPlugins(ctx, config)
 ...
 +	ttrpcServer, err := newTTRPCServer()
 
@@ -220,7 +223,7 @@ func New(ctx context.Context, config *srvconfig.Config) (*Server, error) {
 			initContext.Config = pc
 		}
 -		//初始化plugin		
-+		result := p.Init(initContext)
+		result := p.Init(initContext)
 +		if err := initialized.Add(result); err != nil {
 			return nil, errors.Wrapf(err, "could not add plugin result to plugin set")
 		}
@@ -254,16 +257,20 @@ func New(ctx context.Context, config *srvconfig.Config) (*Server, error) {
 -	//按照server类型注册services
 	// register services after all plugins have been initialized
 	for _, service := range grpcServices {
+-		// 运行service里的Register方法	
 		if err := service.Register(grpcServer); err != nil {
 			return nil, err
 		}
 	}
 	for _, service := range ttrpcServices {
+-		// 运行service里的Register方法	
 		if err := service.RegisterTTRPC(ttrpcServer); err != nil {
 			return nil, err
 		}
 	}
+	
 	for _, service := range tcpServices {
+-		// 运行service里的Register方法	
 		if err := service.RegisterTCP(tcpServer); err != nil {
 			return nil, err
 		}
@@ -283,7 +290,8 @@ func LoadPlugins(ctx context.Context, config *srvconfig.Config) ([]*plugin.Regis
 	if path == "" {
 		path = filepath.Join(config.Root, "plugins")
 	}
-+	if err := plugin.Load(path); err != nil {
+-	// 从指定路径自动加载Plugin binary	
+	if err := plugin.Load(path); err != nil {
 		return nil, err
 	}
 -	// 部分plugins需要手动加载
@@ -376,7 +384,7 @@ func LoadPlugins(ctx context.Context, config *srvconfig.Config) ([]*plugin.Regis
 }
 ```
 
-### 创建底层Server
+### 创建Server
 - 有3种server：grpcServer，和ttrpcServer，tcpServer
 ```diff
 +	ttrpcServer, err := newTTRPCServer()
@@ -422,7 +430,7 @@ func LoadPlugins(ctx context.Context, config *srvconfig.Config) ([]*plugin.Regis
 ```diff
 		l, err := sys.GetLocalListener(config.GRPC.Address, config.GRPC.UID, config.GRPC.GID)
 -		// 注意，第三个参数serveFunc = server.ServeGRPC
-+		serve(ctx, l, server.ServeGRPC)
+		serve(ctx, l, server.ServeGRPC)
 ```
 
 https://github.com/containerd/containerd/blob/d0be7b90f1306d2c7d59e28d3ffd74eddcddfa21/cmd/containerd/command/main.go#L259
