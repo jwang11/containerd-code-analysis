@@ -138,6 +138,7 @@ can be used and modified as necessary as a custom configuration.`
 -		// 监听gPRC Server端口		
 		serve(ctx, l, server.ServeGRPC)
 
+-		// 通知systemd，containerd已经Ready
 		if err := notifyReady(ctx); err != nil {
 			log.G(ctx).WithError(err).Warn("notify ready failed")
 		}
@@ -147,6 +148,11 @@ can be used and modified as necessary as a custom configuration.`
 		return nil
 	}
 	return app
+}
+
+// notifyReady notifies systemd that the daemon is ready to serve requests
+func notifyReady(ctx context.Context) error {
++	return sdNotify(ctx, sd.SdNotifyReady)
 }
 ```
 ### Server的创建及初始化
