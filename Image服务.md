@@ -1,5 +1,6 @@
 # Images服务
-> Image服务提供镜像的list，create，update，delete等操作，但不负责pull和push
+> Image服务提供镜像的list，create，update，delete等操作，但不负责pull和push。<br>
+> image的信息记录在metedata的bolt库里。
 
 ### 外部服务GPRCPlugin的注册
 - 依赖ServicePlugin中的services.ImagesService<br>
