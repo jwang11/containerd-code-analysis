@@ -42,7 +42,7 @@ func init() {
 			if err != nil {
 				return nil, err
 			}
-			cs := metadata.NewContainerStore(m.(*metadata.DB))
++			cs := metadata.NewContainerStore(m.(*metadata.DB))
 			events := ep.(*exchange.Exchange)
 
 +			return New(ic.Context, ic.Root, ic.State, ic.Address, ic.TTRPCAddress, events, cs)
@@ -62,9 +62,9 @@ func New(ctx context.Context, root, state, containerdAddress, containerdTTRPCAdd
 		state:                  state,
 		containerdAddress:      containerdAddress,
 		containerdTTRPCAddress: containerdTTRPCAddress,
-		tasks:                  runtime.NewTaskList(),
++		tasks:                  runtime.NewTaskList(),
 		events:                 events,
-		containers:             cs,
++		containers:             cs,
 	}
 	if err := m.loadExistingTasks(ctx); err != nil {
 		return nil, err
@@ -72,253 +72,10 @@ func New(ctx context.Context, root, state, containerdAddress, containerdTTRPCAdd
 	return m, nil
 }
 ```
-- container store
-```
-type containerStore struct {
-	db *DB
-}
 
-// NewContainerStore returns a Store backed by an underlying bolt DB
-func NewContainerStore(db *DB) containers.Store {
-	return &containerStore{
-		db: db,
-	}
-}
-
-func (s *containerStore) Get(ctx context.Context, id string) (containers.Container, error) {
-	namespace, err := namespaces.NamespaceRequired(ctx)
-	if err != nil {
-		return containers.Container{}, err
-	}
-
-	container := containers.Container{ID: id}
-
-	if err := view(ctx, s.db, func(tx *bolt.Tx) error {
-		bkt := getContainerBucket(tx, namespace, id)
-		if bkt == nil {
-			return errors.Wrapf(errdefs.ErrNotFound, "container %q in namespace %q", id, namespace)
-		}
-
-		if err := readContainer(&container, bkt); err != nil {
-			return errors.Wrapf(err, "failed to read container %q", id)
-		}
-
-		return nil
-	}); err != nil {
-		return containers.Container{}, err
-	}
-
-	return container, nil
-}
-
-func (s *containerStore) List(ctx context.Context, fs ...string) ([]containers.Container, error) {
-	namespace, err := namespaces.NamespaceRequired(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	filter, err := filters.ParseAll(fs...)
-	if err != nil {
-		return nil, errors.Wrap(errdefs.ErrInvalidArgument, err.Error())
-	}
-
-	var m []containers.Container
-
-	if err := view(ctx, s.db, func(tx *bolt.Tx) error {
-		bkt := getContainersBucket(tx, namespace)
-		if bkt == nil {
-			return nil // empty store
-		}
-
-		return bkt.ForEach(func(k, v []byte) error {
-			cbkt := bkt.Bucket(k)
-			if cbkt == nil {
-				return nil
-			}
-			container := containers.Container{ID: string(k)}
-
-			if err := readContainer(&container, cbkt); err != nil {
-				return errors.Wrapf(err, "failed to read container %q", string(k))
-			}
-
-			if filter.Match(adaptContainer(container)) {
-				m = append(m, container)
-			}
-			return nil
-		})
-	}); err != nil {
-		return nil, err
-	}
-
-	return m, nil
-}
-
-func (s *containerStore) Create(ctx context.Context, container containers.Container) (containers.Container, error) {
-	namespace, err := namespaces.NamespaceRequired(ctx)
-	if err != nil {
-		return containers.Container{}, err
-	}
-
-	if err := validateContainer(&container); err != nil {
-		return containers.Container{}, errors.Wrap(err, "create container failed validation")
-	}
-
-	if err := update(ctx, s.db, func(tx *bolt.Tx) error {
-		bkt, err := createContainersBucket(tx, namespace)
-		if err != nil {
-			return err
-		}
-
-		cbkt, err := bkt.CreateBucket([]byte(container.ID))
-		if err != nil {
-			if err == bolt.ErrBucketExists {
-				err = errors.Wrapf(errdefs.ErrAlreadyExists, "container %q", container.ID)
-			}
-			return err
-		}
-
-		container.CreatedAt = time.Now().UTC()
-		container.UpdatedAt = container.CreatedAt
-		if err := writeContainer(cbkt, &container); err != nil {
-			return errors.Wrapf(err, "failed to write container %q", container.ID)
-		}
-
-		return nil
-	}); err != nil {
-		return containers.Container{}, err
-	}
-
-	return container, nil
-}
-
-func (s *containerStore) Update(ctx context.Context, container containers.Container, fieldpaths ...string) (containers.Container, error) {
-	namespace, err := namespaces.NamespaceRequired(ctx)
-	if err != nil {
-		return containers.Container{}, err
-	}
-
-	if container.ID == "" {
-		return containers.Container{}, errors.Wrapf(errdefs.ErrInvalidArgument, "must specify a container id")
-	}
-
-	var updated containers.Container
-	if err := update(ctx, s.db, func(tx *bolt.Tx) error {
-		bkt := getContainersBucket(tx, namespace)
-		if bkt == nil {
-			return errors.Wrapf(errdefs.ErrNotFound, "cannot update container %q in namespace %q", container.ID, namespace)
-		}
-
-		cbkt := bkt.Bucket([]byte(container.ID))
-		if cbkt == nil {
-			return errors.Wrapf(errdefs.ErrNotFound, "container %q", container.ID)
-		}
-
-		if err := readContainer(&updated, cbkt); err != nil {
-			return errors.Wrapf(err, "failed to read container %q", container.ID)
-		}
-		createdat := updated.CreatedAt
-		updated.ID = container.ID
-
-		if len(fieldpaths) == 0 {
-			// only allow updates to these field on full replace.
-			fieldpaths = []string{"labels", "spec", "extensions", "image", "snapshotkey"}
-
-			// Fields that are immutable must cause an error when no field paths
-			// are provided. This allows these fields to become mutable in the
-			// future.
-			if updated.Snapshotter != container.Snapshotter {
-				return errors.Wrapf(errdefs.ErrInvalidArgument, "container.Snapshotter field is immutable")
-			}
-
-			if updated.Runtime.Name != container.Runtime.Name {
-				return errors.Wrapf(errdefs.ErrInvalidArgument, "container.Runtime.Name field is immutable")
-			}
-		}
-
-		// apply the field mask. If you update this code, you better follow the
-		// field mask rules in field_mask.proto. If you don't know what this
-		// is, do not update this code.
-		for _, path := range fieldpaths {
-			if strings.HasPrefix(path, "labels.") {
-				if updated.Labels == nil {
-					updated.Labels = map[string]string{}
-				}
-				key := strings.TrimPrefix(path, "labels.")
-				updated.Labels[key] = container.Labels[key]
-				continue
-			}
-
-			if strings.HasPrefix(path, "extensions.") {
-				if updated.Extensions == nil {
-					updated.Extensions = map[string]types.Any{}
-				}
-				key := strings.TrimPrefix(path, "extensions.")
-				updated.Extensions[key] = container.Extensions[key]
-				continue
-			}
-
-			switch path {
-			case "labels":
-				updated.Labels = container.Labels
-			case "spec":
-				updated.Spec = container.Spec
-			case "extensions":
-				updated.Extensions = container.Extensions
-			case "image":
-				updated.Image = container.Image
-			case "snapshotkey":
-				updated.SnapshotKey = container.SnapshotKey
-			default:
-				return errors.Wrapf(errdefs.ErrInvalidArgument, "cannot update %q field on %q", path, container.ID)
-			}
-		}
-
-		if err := validateContainer(&updated); err != nil {
-			return errors.Wrap(err, "update failed validation")
-		}
-
-		updated.CreatedAt = createdat
-		updated.UpdatedAt = time.Now().UTC()
-		if err := writeContainer(cbkt, &updated); err != nil {
-			return errors.Wrapf(err, "failed to write container %q", container.ID)
-		}
-
-		return nil
-	}); err != nil {
-		return containers.Container{}, err
-	}
-
-	return updated, nil
-}
-
-func (s *containerStore) Delete(ctx context.Context, id string) error {
-	namespace, err := namespaces.NamespaceRequired(ctx)
-	if err != nil {
-		return err
-	}
-
-	return update(ctx, s.db, func(tx *bolt.Tx) error {
-		bkt := getContainersBucket(tx, namespace)
-		if bkt == nil {
-			return errors.Wrapf(errdefs.ErrNotFound, "cannot delete container %q in namespace %q", id, namespace)
-		}
-
-		if err := bkt.DeleteBucket([]byte(id)); err != nil {
-			if err == bolt.ErrBucketNotFound {
-				err = errors.Wrapf(errdefs.ErrNotFound, "container %v", id)
-			}
-			return err
-		}
-
-		atomic.AddUint32(&s.db.dirty, 1)
-
-		return nil
-	})
-}
-```
-
-- TaskManager实现
-```
+### Runtime_v2的实现
+- TaskManager
+```diff
 type TaskManager struct {
 	root                   string
 	state                  string
@@ -334,7 +91,10 @@ type TaskManager struct {
 func (m *TaskManager) ID() string {
 	return fmt.Sprintf("%s.%s", plugin.RuntimePluginV2, "task")
 }
+```
 
+- ***Create***
+```diff
 // Create a new task
 func (m *TaskManager) Create(ctx context.Context, id string, opts runtime.CreateOpts) (_ runtime.Task, retErr error) {
 	bundle, err := NewBundle(ctx, m.root, m.state, id, opts.Spec.Value)
@@ -368,7 +128,9 @@ func (m *TaskManager) Create(ctx context.Context, id string, opts runtime.Create
 
 	return t, nil
 }
-
+```
+- ***startShim***
+```diff
 func (m *TaskManager) startShim(ctx context.Context, bundle *Bundle, id string, opts runtime.CreateOpts) (*shim, error) {
 	ns, err := namespaces.NamespaceRequired(ctx)
 	if err != nil {
@@ -397,23 +159,10 @@ func (m *TaskManager) startShim(ctx context.Context, bundle *Bundle, id string, 
 
 	return shim, nil
 }
+```
 
-// deleteShim attempts to properly delete and cleanup shim after error
-func (m *TaskManager) deleteShim(shim *shim) {
-	dctx, cancel := timeout.WithContext(context.Background(), cleanupTimeout)
-	defer cancel()
-
-	_, errShim := shim.delete(dctx, m.tasks.Delete)
-	if errShim != nil {
-		if errdefs.IsDeadlineExceeded(errShim) {
-			dctx, cancel = timeout.WithContext(context.Background(), cleanupTimeout)
-			defer cancel()
-		}
-		shim.Shutdown(dctx)
-		shim.Close()
-	}
-}
-
+- ***Get***和***Add***
+```diff
 // Get a specific task
 func (m *TaskManager) Get(ctx context.Context, id string) (runtime.Task, error) {
 	return m.tasks.Get(ctx, id)
@@ -423,23 +172,10 @@ func (m *TaskManager) Get(ctx context.Context, id string) (runtime.Task, error) 
 func (m *TaskManager) Add(ctx context.Context, task runtime.Task) error {
 	return m.tasks.Add(ctx, task)
 }
+```
 
-// Delete a runtime task
-func (m *TaskManager) Delete(ctx context.Context, id string) (*runtime.Exit, error) {
-	task, err := m.tasks.Get(ctx, id)
-	if err != nil {
-		return nil, err
-	}
-
-	shim := task.(*shim)
-	exit, err := shim.delete(ctx, m.tasks.Delete)
-	if err != nil {
-		return nil, err
-	}
-
-	return exit, err
-}
-
+- ***Tasks***和***LoadTasks***
+```diff
 // Tasks lists all tasks
 func (m *TaskManager) Tasks(ctx context.Context, all bool) ([]runtime.Task, error) {
 	return m.tasks.GetAll(ctx, all)
@@ -532,35 +268,15 @@ func (m *TaskManager) loadTasks(ctx context.Context) error {
 	}
 	return nil
 }
+```
 
+- ***containers***
+```diff
 func (m *TaskManager) container(ctx context.Context, id string) (*containers.Container, error) {
 	container, err := m.containers.Get(ctx, id)
 	if err != nil {
 		return nil, err
 	}
 	return &container, nil
-}
-
-func (m *TaskManager) cleanupWorkDirs(ctx context.Context) error {
-	ns, err := namespaces.NamespaceRequired(ctx)
-	if err != nil {
-		return err
-	}
-	dirs, err := ioutil.ReadDir(filepath.Join(m.root, ns))
-	if err != nil {
-		return err
-	}
-	for _, d := range dirs {
-		// if the task was not loaded, cleanup and empty working directory
-		// this can happen on a reboot where /run for the bundle state is cleaned up
-		// but that persistent working dir is left
-		if _, err := m.tasks.Get(ctx, d.Name()); err != nil {
-			path := filepath.Join(m.root, ns, d.Name())
-			if err := os.RemoveAll(path); err != nil {
-				log.G(ctx).WithError(err).Errorf("cleanup working dir %s", path)
-			}
-		}
-	}
-	return nil
 }
 ```
