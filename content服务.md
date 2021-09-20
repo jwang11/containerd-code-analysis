@@ -244,7 +244,7 @@ func (s *service) ListStatuses(ctx context.Context, req *api.ListStatusesRequest
 }
 ```
 
-- ***Write**
+- ***Write***
 ```diff
 func (s *service) Write(session api.Content_WriteServer) (err error) {
 	var (
