@@ -1,10 +1,9 @@
 # Runtime_v2服务
 > containerd通过runtime_v2服务做container的执行和管理。以创建容器为例，runtime_v2先启动v2_shim_runc垫层，然后垫层去执行go_runc包装层里的runc。因此，runtime_v2本质上是Container执行任务的管理器。
 
-### Runtime_v2的注册
-(https://github.com/containerd/containerd/blob/main/runtime/v2/manager.go)
-- RuntimePluginV2注册申请，InitFn返回TaskManager作为该plugin的instance
-```
+### Runtime_v2的[注册](https://github.com/containerd/containerd/blob/main/runtime/v2/manager.go)
+- RuntimePluginV2注册申请，InitFn返回TaskManager，也就是该plugin的instance
+```diff
 // Config for the v2 runtime
 type Config struct {
 	// Supported platforms
@@ -13,8 +12,8 @@ type Config struct {
 
 func init() {
 	plugin.Register(&plugin.Registration{
-		Type: plugin.RuntimePluginV2,
-		ID:   "task",
++		Type: plugin.RuntimePluginV2,
++		ID:   "task",
 		Requires: []plugin.Type{
 			plugin.EventPlugin,
 			plugin.MetadataPlugin,
@@ -46,7 +45,7 @@ func init() {
 			cs := metadata.NewContainerStore(m.(*metadata.DB))
 			events := ep.(*exchange.Exchange)
 
-			return New(ic.Context, ic.Root, ic.State, ic.Address, ic.TTRPCAddress, events, cs)
++			return New(ic.Context, ic.Root, ic.State, ic.Address, ic.TTRPCAddress, events, cs)
 		},
 	})
 }
