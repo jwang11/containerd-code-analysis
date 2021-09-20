@@ -1,4 +1,4 @@
-> metadata服务通过基于bolt键值数据库以及local文件库的content store来管理各种meta信息，包括label, content，time, manifest，config以及blob。
+> metadata服务通过基于bolt键值数据库以及local文件库的contentStore来管理各种meta信息，包括label, content，time, manifest，config以及blob。
 
 ## Metadata服务的初始化
 
@@ -95,8 +95,8 @@ func LoadPlugins(ctx context.Context, config *srvconfig.Config) ([]*plugin.Regis
 }
 ```
 
-### ContentPlugin注册Local content store
-- Local store除了被metadata需要，以后还会在Content的SevicePlugin里被用到
+### ContentPlugin注册
+- 这个local store是基于文件系统的
 [local store](https://github.com/containerd/containerd/blob/main/content/local/store.go)
 ```diff
 // NewStore returns a local content store
