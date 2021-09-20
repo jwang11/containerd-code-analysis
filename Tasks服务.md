@@ -1,13 +1,13 @@
-# Task服务
+# Tasks服务
 > Task代表执行中的Container对象，而Task服务管理这些对象。// Task is the runtime object for an executing container
 
-### Task外部服务注册和初始化
+### 外部服务注册
 - 外部服务通过GPRC Plugin注册，ID是“tasks”，类型“plugin.GRPCPlugin”
-```
+```diff
 func init() {
 	plugin.Register(&plugin.Registration{
-		Type: plugin.GRPCPlugin,
-		ID:   "tasks",
++		Type: plugin.GRPCPlugin,
++		ID:   "tasks",
 		Requires: []plugin.Type{
 			plugin.ServicePlugin,
 		},
@@ -24,7 +24,7 @@ func init() {
 			if err != nil {
 				return nil, err
 			}
-			return &service{local: i.(api.TasksClient)}, nil
++			return &service{local: i.(api.TasksClient)}, nil
 		},
 	})
 }
@@ -33,17 +33,54 @@ func init() {
 - 初始化函数InitFn依赖内部服务plugin.ServicePlugin[services.TaskService]，InitFn执行完后返回service结构
 ```
 type service struct {
-	local api.TasksClient
++	local api.TasksClient
 }
 ```
 
-### Task内部服务注册和初始化
+### 外部服务的实现
+```diff
+func (s *service) Register(server *grpc.Server) error {
+	api.RegisterTasksServer(server, s)
+	return nil
+}
+
+func (s *service) Create(ctx context.Context, r *api.CreateTaskRequest) (*api.CreateTaskResponse, error) {
++	return s.local.Create(ctx, r)
+}
+
+func (s *service) Start(ctx context.Context, r *api.StartRequest) (*api.StartResponse, error) {
++	return s.local.Start(ctx, r)
+}
+
+func (s *service) Delete(ctx context.Context, r *api.DeleteTaskRequest) (*api.DeleteResponse, error) {
++	return s.local.Delete(ctx, r)
+}
+
+func (s *service) DeleteProcess(ctx context.Context, r *api.DeleteProcessRequest) (*api.DeleteResponse, error) {
++	return s.local.DeleteProcess(ctx, r)
+}
+
+func (s *service) Get(ctx context.Context, r *api.GetRequest) (*api.GetResponse, error) {
++	return s.local.Get(ctx, r)
+}
+
+func (s *service) List(ctx context.Context, r *api.ListTasksRequest) (*api.ListTasksResponse, error) {
++	return s.local.List(ctx, r)
+}
+
+func (s *service) Pause(ctx context.Context, r *api.PauseTaskRequest) (*ptypes.Empty, error) {
++	return s.local.Pause(ctx, r)
+}
+
+```
+
+### Task内部服务注册
 - 内部服务Service.Plugin的注册
 ```diff
 func init() {
 	plugin.Register(&plugin.Registration{
-		Type:     plugin.ServicePlugin,
-		ID:       services.TasksService,
++		Type:     plugin.ServicePlugin,
++		ID:       services.TasksService,
 +		Requires: tasksServiceRequires,
 		InitFn:   initFunc,
 	})
@@ -64,12 +101,13 @@ func initFunc(ic *plugin.InitContext) (interface{}, error) {
 	if err != nil {
 		return nil, err
 	}
-
+-	// v2_runtime服务
 	v2r, err := ic.Get(plugin.RuntimePluginV2)
 	if err != nil {
 		return nil, err
 	}
 
+-	// metadata服务
 	m, err := ic.Get(plugin.MetadataPlugin)
 	if err != nil {
 		return nil, err
@@ -80,6 +118,7 @@ func initFunc(ic *plugin.InitContext) (interface{}, error) {
 		return nil, err
 	}
 
+-	// TaskMonitor服务
 	monitor, err := ic.Get(plugin.TaskMonitorPlugin)
 	if err != nil {
 		if !errdefs.IsNotFound(err) {
@@ -91,11 +130,11 @@ func initFunc(ic *plugin.InitContext) (interface{}, error) {
 	db := m.(*metadata.DB)
 	l := &local{
 		runtimes:   runtimes,
-		containers: metadata.NewContainerStore(db),
-		store:      db.ContentStore(),
++		containers: metadata.NewContainerStore(db),
++		store:      db.ContentStore(),
 		publisher:  ep.(events.Publisher),
-		monitor:    monitor.(runtime.TaskMonitor),
-		v2Runtime:  v2r.(*v2.TaskManager),
++		monitor:    monitor.(runtime.TaskMonitor),
++		v2Runtime:  v2r.(*v2.TaskManager),
 	}
 	for _, r := range runtimes {
 		tasks, err := r.Tasks(ic.Context, true)
@@ -106,7 +145,7 @@ func initFunc(ic *plugin.InitContext) (interface{}, error) {
 			l.monitor.Monitor(t, nil)
 		}
 	}
-	v2Tasks, err := l.v2Runtime.Tasks(ic.Context, true)
++	v2Tasks, err := l.v2Runtime.Tasks(ic.Context, true)
 	if err != nil {
 		return nil, err
 	}
