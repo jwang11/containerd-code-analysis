@@ -1,4 +1,4 @@
-> metadata服务通过建立bolt键值数据库以及一个local content文件库来管理各种meta信息，包括label, content，time, manifest，config以及blob。
+> metadata服务通过基于bolt键值数据库以及local文件库的content store来管理各种meta信息，包括label, content，time, manifest，config以及blob。
 
 ## Metadata服务的初始化
 
