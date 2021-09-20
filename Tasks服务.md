@@ -37,8 +37,33 @@ type service struct {
 }
 ```
 
-### 外部服务的实现
+### 外部服务实现
 ```diff
+// TasksServer is the server API for Tasks service.
+type TasksServer interface {
+	// Create a task.
+	Create(context.Context, *CreateTaskRequest) (*CreateTaskResponse, error)
+	// Start a process.
+	Start(context.Context, *StartRequest) (*StartResponse, error)
+	// Delete a task and on disk state.
+	Delete(context.Context, *DeleteTaskRequest) (*DeleteResponse, error)
+	DeleteProcess(context.Context, *DeleteProcessRequest) (*DeleteResponse, error)
+	Get(context.Context, *GetRequest) (*GetResponse, error)
+	List(context.Context, *ListTasksRequest) (*ListTasksResponse, error)
+	// Kill a task or process.
+	Kill(context.Context, *KillRequest) (*types1.Empty, error)
+	Exec(context.Context, *ExecProcessRequest) (*types1.Empty, error)
+	ResizePty(context.Context, *ResizePtyRequest) (*types1.Empty, error)
+	CloseIO(context.Context, *CloseIORequest) (*types1.Empty, error)
+	Pause(context.Context, *PauseTaskRequest) (*types1.Empty, error)
+	Resume(context.Context, *ResumeTaskRequest) (*types1.Empty, error)
+	ListPids(context.Context, *ListPidsRequest) (*ListPidsResponse, error)
+	Checkpoint(context.Context, *CheckpointTaskRequest) (*CheckpointTaskResponse, error)
+	Update(context.Context, *UpdateTaskRequest) (*types1.Empty, error)
+	Metrics(context.Context, *MetricsRequest) (*MetricsResponse, error)
+	Wait(context.Context, *WaitRequest) (*WaitResponse, error)
+}
+
 func (s *service) Register(server *grpc.Server) error {
 	api.RegisterTasksServer(server, s)
 	return nil
@@ -74,8 +99,7 @@ func (s *service) Pause(ctx context.Context, r *api.PauseTaskRequest) (*ptypes.E
 
 ```
 
-### Task内部服务注册
-- 内部服务Service.Plugin的注册
+### 内部服务注册
 ```diff
 func init() {
 	plugin.Register(&plugin.Registration{
@@ -155,127 +179,11 @@ func initFunc(ic *plugin.InitContext) (interface{}, error) {
 	return l, nil
 }
 ```
-- 初始化函数InitFn依赖(Linux下），plugin.EventPlugin, plugin.RuntimePlugin, plugin.RuntimePluginV2, plugin.MetadataPlugin, plugin.TaskMonitorPlugin,
-- InitFn返回local结构
-```
-type local struct {
-	runtimes   map[string]runtime.PlatformRuntime
-	containers containers.Store
-	store      content.Store
-	publisher  events.Publisher
 
-	monitor   runtime.TaskMonitor
-	v2Runtime *v2.TaskManager
-}
-```
-### Task外部服务接口实现
-- Task外部服务接口
-```
-// TasksServer is the server API for Tasks service.
-type TasksServer interface {
-	// Create a task.
-	Create(context.Context, *CreateTaskRequest) (*CreateTaskResponse, error)
-	// Start a process.
-	Start(context.Context, *StartRequest) (*StartResponse, error)
-	// Delete a task and on disk state.
-	Delete(context.Context, *DeleteTaskRequest) (*DeleteResponse, error)
-	DeleteProcess(context.Context, *DeleteProcessRequest) (*DeleteResponse, error)
-	Get(context.Context, *GetRequest) (*GetResponse, error)
-	List(context.Context, *ListTasksRequest) (*ListTasksResponse, error)
-	// Kill a task or process.
-	Kill(context.Context, *KillRequest) (*types1.Empty, error)
-	Exec(context.Context, *ExecProcessRequest) (*types1.Empty, error)
-	ResizePty(context.Context, *ResizePtyRequest) (*types1.Empty, error)
-	CloseIO(context.Context, *CloseIORequest) (*types1.Empty, error)
-	Pause(context.Context, *PauseTaskRequest) (*types1.Empty, error)
-	Resume(context.Context, *ResumeTaskRequest) (*types1.Empty, error)
-	ListPids(context.Context, *ListPidsRequest) (*ListPidsResponse, error)
-	Checkpoint(context.Context, *CheckpointTaskRequest) (*CheckpointTaskResponse, error)
-	Update(context.Context, *UpdateTaskRequest) (*types1.Empty, error)
-	Metrics(context.Context, *MetricsRequest) (*MetricsResponse, error)
-	Wait(context.Context, *WaitRequest) (*WaitResponse, error)
-}
-```
 
-- 接口实现
-```
-func (s *service) Register(server *grpc.Server) error {
-	api.RegisterTasksServer(server, s)
-	return nil
-}
-
-func (s *service) Create(ctx context.Context, r *api.CreateTaskRequest) (*api.CreateTaskResponse, error) {
-	return s.local.Create(ctx, r)
-}
-
-func (s *service) Start(ctx context.Context, r *api.StartRequest) (*api.StartResponse, error) {
-	return s.local.Start(ctx, r)
-}
-
-func (s *service) Delete(ctx context.Context, r *api.DeleteTaskRequest) (*api.DeleteResponse, error) {
-	return s.local.Delete(ctx, r)
-}
-
-func (s *service) DeleteProcess(ctx context.Context, r *api.DeleteProcessRequest) (*api.DeleteResponse, error) {
-	return s.local.DeleteProcess(ctx, r)
-}
-
-func (s *service) Get(ctx context.Context, r *api.GetRequest) (*api.GetResponse, error) {
-	return s.local.Get(ctx, r)
-}
-
-func (s *service) List(ctx context.Context, r *api.ListTasksRequest) (*api.ListTasksResponse, error) {
-	return s.local.List(ctx, r)
-}
-
-func (s *service) Pause(ctx context.Context, r *api.PauseTaskRequest) (*ptypes.Empty, error) {
-	return s.local.Pause(ctx, r)
-}
-
-func (s *service) Resume(ctx context.Context, r *api.ResumeTaskRequest) (*ptypes.Empty, error) {
-	return s.local.Resume(ctx, r)
-}
-
-func (s *service) Kill(ctx context.Context, r *api.KillRequest) (*ptypes.Empty, error) {
-	return s.local.Kill(ctx, r)
-}
-
-func (s *service) ListPids(ctx context.Context, r *api.ListPidsRequest) (*api.ListPidsResponse, error) {
-	return s.local.ListPids(ctx, r)
-}
-
-func (s *service) Exec(ctx context.Context, r *api.ExecProcessRequest) (*ptypes.Empty, error) {
-	return s.local.Exec(ctx, r)
-}
-
-func (s *service) ResizePty(ctx context.Context, r *api.ResizePtyRequest) (*ptypes.Empty, error) {
-	return s.local.ResizePty(ctx, r)
-}
-
-func (s *service) CloseIO(ctx context.Context, r *api.CloseIORequest) (*ptypes.Empty, error) {
-	return s.local.CloseIO(ctx, r)
-}
-
-func (s *service) Checkpoint(ctx context.Context, r *api.CheckpointTaskRequest) (*api.CheckpointTaskResponse, error) {
-	return s.local.Checkpoint(ctx, r)
-}
-
-func (s *service) Update(ctx context.Context, r *api.UpdateTaskRequest) (*ptypes.Empty, error) {
-	return s.local.Update(ctx, r)
-}
-
-func (s *service) Metrics(ctx context.Context, r *api.MetricsRequest) (*api.MetricsResponse, error) {
-	return s.local.Metrics(ctx, r)
-}
-
-func (s *service) Wait(ctx context.Context, r *api.WaitRequest) (*api.WaitResponse, error) {
-	return s.local.Wait(ctx, r)
-}
-```
-
-### Task内部服务接口实现
-- Task内部服务的接口
-```
+### 内部服务实现
+- ***接口***
+```diff
 type TasksClient interface {
 	// Create a task.
 	Create(ctx context.Context, in *CreateTaskRequest, opts ...grpc.CallOption) (*CreateTaskResponse, error)
@@ -301,8 +209,8 @@ type TasksClient interface {
 }
 ```
 
-- Create
-```
+- ***Create***
+```diff
 func (l *local) Create(ctx context.Context, r *api.CreateTaskRequest, _ ...grpc.CallOption) (*api.CreateTaskResponse, error) {
 	container, err := l.getContainer(ctx, r.ContainerID)
 	if err != nil {
@@ -391,7 +299,7 @@ func (l *local) Create(ctx context.Context, r *api.CreateTaskRequest, _ ...grpc.
 }
 ```
 
-- Start
+- ***Start***
 ```
 func (l *local) Start(ctx context.Context, r *api.StartRequest, _ ...grpc.CallOption) (*api.StartResponse, error) {
 	t, err := l.getTask(ctx, r.ContainerID)
@@ -417,8 +325,8 @@ func (l *local) Start(ctx context.Context, r *api.StartRequest, _ ...grpc.CallOp
 }
 ```
 
-- Delete
-```
+- ***其它***
+```diff
 func (l *local) Delete(ctx context.Context, r *api.DeleteTaskRequest, _ ...grpc.CallOption) (*api.DeleteResponse, error) {
 	container, err := l.getContainer(ctx, r.ContainerID)
 	if err != nil {
@@ -452,10 +360,7 @@ func (l *local) Delete(ctx context.Context, r *api.DeleteTaskRequest, _ ...grpc.
 		Pid:        exit.Pid,
 	}, nil
 }
-```
 
-- DeleteProcess
-```
 func (l *local) DeleteProcess(ctx context.Context, r *api.DeleteProcessRequest, _ ...grpc.CallOption) (*api.DeleteResponse, error) {
 	t, err := l.getTask(ctx, r.ContainerID)
 	if err != nil {
@@ -476,9 +381,7 @@ func (l *local) DeleteProcess(ctx context.Context, r *api.DeleteProcessRequest, 
 		Pid:        exit.Pid,
 	}, nil
 }
-```
-- 其它
-```
+
 func (l *local) ListPids(ctx context.Context, r *api.ListPidsRequest, _ ...grpc.CallOption) (*api.ListPidsResponse, error) {
 	t, err := l.getTask(ctx, r.ContainerID)
 	if err != nil {
