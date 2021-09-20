@@ -72,6 +72,120 @@ func New(ctx context.Context, root, state, containerdAddress, containerdTTRPCAdd
 	return m, nil
 }
 ```
+>> ***NewTaskList***和***NewContainerStorer***
+```diff
+// NewTaskList returns a new TaskList
+func NewTaskList() *TaskList {
+	return &TaskList{
+		tasks: make(map[string]map[string]Task),
+	}
+}
+
+// TaskList holds and provides locking around tasks
+type TaskList struct {
+	mu    sync.Mutex
+	tasks map[string]map[string]Task
+}
+
+
+// NewContainerStore returns a Store backed by an underlying bolt DB
+func NewContainerStore(db *DB) containers.Store {
+	return &containerStore{	
++		db: db,	// metadata.DB
+	}
+}
+type containerStore struct {
+	db *DB
+}
+```
+
+>> ***TaskList实现***
+```diff
+// Get a task
+func (l *TaskList) Get(ctx context.Context, id string) (Task, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	namespace, err := namespaces.NamespaceRequired(ctx)
+	if err != nil {
+		return nil, err
+	}
+	tasks, ok := l.tasks[namespace]
+	if !ok {
+		return nil, ErrTaskNotExists
+	}
+	t, ok := tasks[id]
+	if !ok {
+		return nil, ErrTaskNotExists
+	}
+	return t, nil
+}
+
+// GetAll tasks under a namespace
+func (l *TaskList) GetAll(ctx context.Context, noNS bool) ([]Task, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var o []Task
+	if noNS {
+		for ns := range l.tasks {
+			for _, t := range l.tasks[ns] {
+				o = append(o, t)
+			}
+		}
+		return o, nil
+	}
+	namespace, err := namespaces.NamespaceRequired(ctx)
+	if err != nil {
+		return nil, err
+	}
+	tasks, ok := l.tasks[namespace]
+	if !ok {
+		return o, nil
+	}
+	for _, t := range tasks {
+		o = append(o, t)
+	}
+	return o, nil
+}
+
+// Add a task
+func (l *TaskList) Add(ctx context.Context, t Task) error {
+	namespace, err := namespaces.NamespaceRequired(ctx)
+	if err != nil {
+		return err
+	}
+	return l.AddWithNamespace(namespace, t)
+}
+
+// AddWithNamespace adds a task with the provided namespace
+func (l *TaskList) AddWithNamespace(namespace string, t Task) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	id := t.ID()
+	if _, ok := l.tasks[namespace]; !ok {
+		l.tasks[namespace] = make(map[string]Task)
+	}
+	if _, ok := l.tasks[namespace][id]; ok {
+		return errors.Wrap(ErrTaskAlreadyExists, id)
+	}
+	l.tasks[namespace][id] = t
+	return nil
+}
+
+// Delete a task
+func (l *TaskList) Delete(ctx context.Context, id string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	namespace, err := namespaces.NamespaceRequired(ctx)
+	if err != nil {
+		return
+	}
+	tasks, ok := l.tasks[namespace]
+	if ok {
+		delete(tasks, id)
+	}
+}
+```
 
 ### Runtime_v2的实现
 - TaskManager
@@ -95,6 +209,7 @@ func (m *TaskManager) ID() string {
 
 - ***Create***
 ```diff
+- // 在runtime里真正创建一个container
 // Create a new task
 func (m *TaskManager) Create(ctx context.Context, id string, opts runtime.CreateOpts) (_ runtime.Task, retErr error) {
 	bundle, err := NewBundle(ctx, m.root, m.state, id, opts.Spec.Value)
@@ -131,6 +246,7 @@ func (m *TaskManager) Create(ctx context.Context, id string, opts runtime.Create
 ```
 - ***startShim***
 ```diff
+- // 启动shim垫片进程
 func (m *TaskManager) startShim(ctx context.Context, bundle *Bundle, id string, opts runtime.CreateOpts) (*shim, error) {
 	ns, err := namespaces.NamespaceRequired(ctx)
 	if err != nil {
