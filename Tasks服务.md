@@ -105,7 +105,7 @@ func init() {
 	plugin.Register(&plugin.Registration{
 +		Type:     plugin.ServicePlugin,
 +		ID:       services.TasksService,
-+		Requires: tasksServiceRequires,
+		Requires: tasksServiceRequires,
 		InitFn:   initFunc,
 	})
 
