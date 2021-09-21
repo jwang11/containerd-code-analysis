@@ -29,6 +29,7 @@ func Run(id string, initFunc Init, opts ...BinaryOpts) {
 	}
 }
 
+
 func run(id string, initFunc Init, config Config) error {
 	parseFlags()
 	if versionFlag {
@@ -50,7 +51,7 @@ func run(id string, initFunc Init, config Config) error {
 	if err != nil {
 		return err
 	}
--	// 如果shim是reaper，设置Prctl(unix.PR_SET_CHILD_SUBREAPER...
+
 	if !config.NoSubreaper {
 		if err := subreaper(); err != nil {
 			return err
@@ -73,6 +74,7 @@ func run(id string, initFunc Init, config Config) error {
 		return err
 	}
 
+	// Handle explicit actions
 	switch action {
 	case "delete":
 		logger := logrus.WithFields(logrus.Fields{
@@ -99,6 +101,7 @@ func run(id string, initFunc Init, config Config) error {
 			Address:          addressFlag,
 			TTRPCAddress:     ttrpcAddress,
 		}
+-		// gRPC服务
 		address, err := service.StartShim(ctx, opts)
 		if err != nil {
 			return err
@@ -107,46 +110,129 @@ func run(id string, initFunc Init, config Config) error {
 			return err
 		}
 		return nil
-	default:
-		if !config.NoSetupLogger {
-			if err := setLogger(ctx, idFlag); err != nil {
-				return err
-			}
+	}
+
+-	// ttRPC服务
+	if !config.NoSetupLogger {
+		if err := setLogger(ctx, idFlag); err != nil {
+			return err
 		}
-+		client := NewShimClient(ctx, service, signals)
-+		if err := client.Serve(); err != nil {
-			if err != context.Canceled {
-				return err
-			}
+	}
+
+	// Register event plugin
+	plugin.Register(&plugin.Registration{
+		Type: plugin.EventPlugin,
+		ID:   "publisher",
+		InitFn: func(ic *plugin.InitContext) (interface{}, error) {
+			return publisher, nil
+		},
+	})
+
+	// If service is an implementation of the task service, register it as a plugin
+	if ts, ok := service.(shimapi.TaskService); ok {
+		plugin.Register(&plugin.Registration{
+			Type: plugin.TTRPCPlugin,
+			ID:   "task",
+			InitFn: func(ic *plugin.InitContext) (interface{}, error) {
+				return &taskService{ts}, nil
+			},
+		})
+	}
+
+	var (
+		initialized   = plugin.NewPluginSet()
+		ttrpcServices = []ttrpcService{}
+	)
+	plugins := plugin.Graph(func(*plugin.Registration) bool { return false })
+	for _, p := range plugins {
+		id := p.URI()
+		log.G(ctx).WithField("type", p.Type).Infof("loading plugin %q...", id)
+
+		initContext := plugin.NewContext(
+			ctx,
+			p,
+			initialized,
+			// NOTE: Root is empty since the shim does not support persistent storage,
+			// shim plugins should make use state directory for writing files to disk.
+			// The state directory will be destroyed when the shim if cleaned up or
+			// on reboot
+			"",
+			bundlePath,
+		)
+		initContext.Address = addressFlag
+		initContext.TTRPCAddress = ttrpcAddress
+
+		// load the plugin specific configuration if it is provided
+		//TODO: Read configuration passed into shim, or from state directory?
+		//if p.Config != nil {
+		//	pc, err := config.Decode(p)
+		//	if err != nil {
+		//		return nil, err
+		//	}
+		//	initContext.Config = pc
+		//}
+
+		result := p.Init(initContext)
+		if err := initialized.Add(result); err != nil {
+			return errors.Wrapf(err, "could not add plugin result to plugin set")
 		}
 
-		// NOTE: If the shim server is down(like oom killer), the address
-		// socket might be leaking.
-		if address, err := ReadAddress("address"); err == nil {
-			_ = RemoveSocket(address)
+		instance, err := result.Instance()
+		if err != nil {
+			if plugin.IsSkipPlugin(err) {
+				log.G(ctx).WithError(err).WithField("type", p.Type).Infof("skip loading plugin %q...", id)
+			} else {
+				log.G(ctx).WithError(err).Warnf("failed to load plugin %s", id)
+			}
+			continue
 		}
 
-		select {
-		case <-publisher.Done():
-			return nil
-		case <-time.After(5 * time.Second):
-			return errors.New("publisher not closed")
+		if src, ok := instance.(ttrpcService); ok {
+			logrus.WithField("id", id).Debug("registering ttrpc service")
+			ttrpcServices = append(ttrpcServices, src)
 		}
+	}
+
+	server, err := newServer()
+	if err != nil {
+		return errors.Wrap(err, "failed creating server")
+	}
+
+	for _, srv := range ttrpcServices {
+		if err := srv.RegisterTTRPC(server); err != nil {
+			return errors.Wrap(err, "failed to register service")
+		}
+	}
+
+	if err := serve(ctx, server, signals); err != nil {
+		if err != context.Canceled {
+			return err
+		}
+	}
+
+	// NOTE: If the shim server is down(like oom killer), the address
+	// socket might be leaking.
+	if address, err := ReadAddress("address"); err == nil {
+		_ = RemoveSocket(address)
+	}
+
+	select {
+	case <-publisher.Done():
+		return nil
+	case <-time.After(5 * time.Second):
+		return errors.New("publisher not closed")
 	}
 }
 
-// NewShimClient creates a new shim server client
-func NewShimClient(ctx context.Context, svc shimapi.TaskService, signals chan os.Signal) *Client {
-	s := &Client{
-		service: svc,
-		context: ctx,
-		signals: signals,
-	}
-	return s
+func newServer() (*ttrpc.Server, error) {
+	return ttrpc.NewServer(ttrpc.WithServerHandshaker(ttrpc.UnixSocketRequireSameUser()))
 }
-
-// Serve the shim server
-func (s *Client) Serve() error {
+```
+>> ***serve(ctx, server, signals)***
+```diff
+// serve serves the ttrpc API over a unix socket in the current working directory
+// and blocks until the context is canceled
+func serve(ctx context.Context, server *ttrpc.Server, signals chan os.Signal) error {
 	dump := make(chan os.Signal, 32)
 	setupDumpStacks(dump)
 
@@ -154,17 +240,18 @@ func (s *Client) Serve() error {
 	if err != nil {
 		return err
 	}
-	server, err := newServer()
+
+	l, err := serveListener(socketFlag)
 	if err != nil {
-		return errors.Wrap(err, "failed creating server")
-	}
-
-	logrus.Debug("registering ttrpc server")
-	shimapi.RegisterTaskService(server, s.service)
-
-	if err := serve(s.context, server, socketFlag); err != nil {
 		return err
 	}
+	go func() {
+		defer l.Close()
+		if err := server.Serve(ctx, l); err != nil &&
+			!strings.Contains(err.Error(), "use of closed network connection") {
+			logrus.WithError(err).Fatal("containerd-shim: ttrpc server failure")
+		}
+	}()
 	logger := logrus.WithFields(logrus.Fields{
 		"pid":       os.Getpid(),
 		"path":      path,
@@ -175,15 +262,11 @@ func (s *Client) Serve() error {
 			dumpStacks(logger)
 		}
 	}()
-	return handleSignals(s.context, logger, s.signals)
-}
-
-func newServer() (*ttrpc.Server, error) {
-	return ttrpc.NewServer(ttrpc.WithServerHandshaker(ttrpc.UnixSocketRequireSameUser()))
+	return handleSignals(ctx, logger, signals)
 }
 ```
 
-- [v2.New](https://github.com/containerd/containerd/blob/main/runtime/v2/runc/v2/service.go)
+### [v2.New](https://github.com/containerd/containerd/blob/main/runtime/v2/runc/v2/service.go)生成gPRC服务
 ```
 // New returns a new shim service that can be used via GRPC
 func New(ctx context.Context, id string, publisher shim.Publisher, shutdown func()) (shim.Shim, error) {
@@ -211,11 +294,11 @@ func New(ctx context.Context, id string, publisher shim.Publisher, shutdown func
 	}
 	go s.processExits()
 	runcC.Monitor = reaper.Default
-	if err := s.initPlatform(); err != nil {
++	if err := s.initPlatform(); err != nil {
 		shutdown()
 		return nil, errors.Wrap(err, "failed to initialized platform behavior")
 	}
-	go s.forward(ctx, publisher)
++	go s.forward(ctx, publisher)
 
 	if address, err := shim.ReadAddress("address"); err == nil {
 		s.shimAddress = address
