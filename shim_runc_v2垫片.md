@@ -15,7 +15,7 @@ func main() {
 +	shim.Run("io.containerd.runc.v2", v2.New)
 }
 ```
-- [shim.Run](https://github.com/containerd/containerd/blob/main/runtime/v2/shim/shim.go)
+- [shim.Run](https://github.com/containerd/containerd/blob/main/runtime/v2/shim/shim.go)，注意参数initFunc=v2.New
 ```diff
 // Run initializes and runs a shim server
 func Run(id string, initFunc Init, opts ...BinaryOpts) {
