@@ -52,6 +52,7 @@ func run(id string, initFunc Init, config Config) error {
 		return err
 	}
 
+-	// 指定shim是subreaper
 	if !config.NoSubreaper {
 		if err := subreaper(); err != nil {
 			return err
@@ -101,7 +102,7 @@ func run(id string, initFunc Init, config Config) error {
 			Address:          addressFlag,
 			TTRPCAddress:     ttrpcAddress,
 		}
--		// gRPC服务
+-		// 启动gRPC服务
 		address, err := service.StartShim(ctx, opts)
 		if err != nil {
 			return err
@@ -112,7 +113,7 @@ func run(id string, initFunc Init, config Config) error {
 		return nil
 	}
 
--	// ttRPC服务
+
 	if !config.NoSetupLogger {
 		if err := setLogger(ctx, idFlag); err != nil {
 			return err
@@ -128,6 +129,7 @@ func run(id string, initFunc Init, config Config) error {
 		},
 	})
 
+-	// ttRPC服务
 	// If service is an implementation of the task service, register it as a plugin
 	if ts, ok := service.(shimapi.TaskService); ok {
 		plugin.Register(&plugin.Registration{
@@ -241,7 +243,7 @@ func serve(ctx context.Context, server *ttrpc.Server, signals chan os.Signal) er
 		return err
 	}
 
-	l, err := serveListener(socketFlag)
++	l, err := serveListener(socketFlag)
 	if err != nil {
 		return err
 	}
@@ -263,6 +265,29 @@ func serve(ctx context.Context, server *ttrpc.Server, signals chan os.Signal) er
 		}
 	}()
 	return handleSignals(ctx, logger, signals)
+}
+```
+>> ***serveListener***
+```diff
+func serveListener(path string) (net.Listener, error) {
+	var (
+		l   net.Listener
+		err error
+	)
+	if path == "" {
+		l, err = net.FileListener(os.NewFile(3, "socket"))
+		path = "[inherited from parent]"
+	} else {
+		if len(path) > socketPathLimit {
+			return nil, errors.Errorf("%q: unix socket path too long (> %d)", path, socketPathLimit)
+		}
+		l, err = net.Listen("unix", path)
+	}
+	if err != nil {
+		return nil, err
+	}
+	logrus.WithField("socket", path).Debug("serving api on socket")
+	return l, nil
 }
 ```
 
@@ -533,7 +558,10 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 		Pid: uint32(container.Pid()),
 	}, nil
 }
+```
 
+- ***Start***
+```diff
 // Start a process
 func (s *service) Start(ctx context.Context, r *taskAPI.StartRequest) (*taskAPI.StartResponse, error) {
 	container, err := s.getContainer()
