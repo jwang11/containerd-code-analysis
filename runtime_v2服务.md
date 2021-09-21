@@ -1,5 +1,5 @@
 # Runtime_v2服务
-> containerd通过runtime_v2服务做container的执行和管理。以创建容器为例，runtime_v2先启动v2_shim_runc垫层，然后垫层去执行go_runc包装层里的runc。因此，runtime_v2本质上是Container执行任务的管理器。
+> runtime_v2服务和shim_runc_v2垫层（独立进程）通信，做container的执行和管理。以创建容器为例，runtime_v2先启动shim_runc_v2垫层，然后垫层去执行go_runc包装层里的runc。因此，runtime_v2本质上是Container执行任务的管理器。
 
 ### Runtime_v2的[注册](https://github.com/containerd/containerd/blob/main/runtime/v2/manager.go)
 - RuntimePluginV2注册申请，InitFn返回TaskManager，也就是该plugin的instance
