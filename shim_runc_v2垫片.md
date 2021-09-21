@@ -291,7 +291,7 @@ func serveListener(path string) (net.Listener, error) {
 }
 ```
 
-### [v2.New](https://github.com/containerd/containerd/blob/main/runtime/v2/runc/v2/service.go)生成gPRC服务
+### [v2.New](https://github.com/containerd/containerd/blob/main/runtime/v2/runc/v2/service.go)生成shim_runc_v2服务
 ```
 // New returns a new shim service that can be used via GRPC
 func New(ctx context.Context, id string, publisher shim.Publisher, shutdown func()) (shim.Shim, error) {
@@ -379,7 +379,7 @@ func NewPlatform() (stdio.Platform, error) {
 	}, nil
 }
 ```
-- ***startShim***
+- ***startShim***生成gRPC server
 ```diff
 
 func (s *service) StartShim(ctx context.Context, opts shim.StartOpts) (_ string, retErr error) {
@@ -526,6 +526,7 @@ func newCommand(ctx context.Context, id, containerdBinary, containerdAddress, co
 }
 ```
 
+### Service的实现
 - ***Create***
 ```diff
 // Create a new initial process and container with the underlying OCI runtime
