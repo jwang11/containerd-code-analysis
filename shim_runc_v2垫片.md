@@ -937,7 +937,7 @@ func (s *service) Start(ctx context.Context, r *taskAPI.StartRequest) (*taskAPI.
 ```diff
 // Start a container process
 func (c *Container) Start(ctx context.Context, r *task.StartRequest) (process.Process, error) {
-	p, err := c.Process(r.ExecID)
++	p, err := c.Process(r.ExecID)
 	if err != nil {
 		return nil, err
 	}
@@ -966,11 +966,75 @@ func (c *Container) Start(ctx context.Context, r *task.StartRequest) (process.Pr
 	return p, nil
 }
 
+// Process returns the process by id
+func (c *Container) Process(id string) (process.Process, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if id == "" {
+		if c.process == nil {
+			return nil, errors.Wrapf(errdefs.ErrFailedPrecondition, "container must be created")
+		}
+		return c.process, nil
+	}
++	p, ok := c.processes[id]
+	if !ok {
+		return nil, errors.Wrapf(errdefs.ErrNotFound, "process does not exist %s", id)
+	}
+	return p, nil
+}
+```
+
+- ***p.Start()***
+```diff
 // Start the init process
 func (p *Init) Start(ctx context.Context) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
+-	//p.initState在New的时候被赋值createdState{p: p}
 	return p.initState.Start(ctx)
 }
 ```
+
+- ***createdState***是负责状态转换
+```diff
+type createdState struct {
+	p *Init
+}
+
+func (s *createdState) transition(name string) error {
+	switch name {
+	case "running":
+		s.p.initState = &runningState{p: s.p}
+	case "stopped":
+		s.p.initState = &stoppedState{p: s.p}
+	case "deleted":
+		s.p.initState = &deletedState{}
+	default:
+		return errors.Errorf("invalid state transition %q to %q", stateName(s), name)
+	}
+	return nil
+}
+
+func (s *createdState) Start(ctx context.Context) error {
++	if err := s.p.start(ctx); err != nil {
+		return err
+	}
++	return s.transition("running")
+}
+```
+
+- ***s.p.start***
+```diff
+func (p *Init) start(ctx context.Context) error {
+-	// p.runtime是runc.Runc
+	err := p.runtime.Start(ctx, p.id)
+	return p.runtimeError(err, "OCI runtime start failed")
+}
+
+// Start will start an already created container
+func (r *Runc) Start(context context.Context, id string) error {
+	return r.runOrError(r.command(context, "start", id))
+}
+```
+
