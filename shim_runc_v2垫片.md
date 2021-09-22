@@ -294,8 +294,8 @@ func serveListener(path string) (net.Listener, error) {
 }
 ```
 
-### [v2.New](https://github.com/containerd/containerd/blob/main/runtime/v2/runc/v2/service.go)生成task service服务
-```
+### [v2.New](https://github.com/containerd/containerd/blob/main/runtime/v2/runc/v2/service.go)生成shim服务，同时也是task service服务
+```diff
 // New returns a new shim service that can be used via GRPC
 func New(ctx context.Context, id string, publisher shim.Publisher, shutdown func()) (shim.Shim, error) {
 	var (
@@ -311,6 +311,7 @@ func New(ctx context.Context, id string, publisher shim.Publisher, shutdown func
 		return nil, err
 	}
 	go ep.Run(ctx)
+-	// 既实现了shim.Shim接口，也实现了taskService接口
 	s := &service{
 		id:         id,
 		context:    ctx,
@@ -353,6 +354,13 @@ type service struct {
 	shimAddress string
 	cancel      func()
 }
+
+// Shim server interface
+type Shim interface {
+	Cleanup(ctx context.Context) (*shimapi.DeleteResponse, error)
+	StartShim(ctx context.Context, opts StartOpts) (string, error)
+}
+
 ```
 
 - ***shim_runc service***实现
@@ -382,7 +390,7 @@ func NewPlatform() (stdio.Platform, error) {
 	}, nil
 }
 ```
-- ***startShim***生成gRPC server
+- ***startShim***生成新的Shim进程
 ```diff
 
 func (s *service) StartShim(ctx context.Context, opts shim.StartOpts) (_ string, retErr error) {
@@ -542,7 +550,7 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 		return nil, err
 	}
 
-	s.container = container
+	s.containers[r.ID] = container
 
 	s.send(&eventstypes.TaskCreate{
 		ContainerID: r.ID,
@@ -561,6 +569,199 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 	return &taskAPI.CreateTaskResponse{
 		Pid: uint32(container.Pid()),
 	}, nil
+}
+```
+>> ***runc.NewContainer(ctx, s.platform, r)***
+```diff
+// NewContainer returns a new runc container
+func NewContainer(ctx context.Context, platform stdio.Platform, r *task.CreateTaskRequest) (_ *Container, retErr error) {
+	ns, err := namespaces.NamespaceRequired(ctx)
+	if err != nil {
+		return nil, errors.Wrap(err, "create namespace")
+	}
+
+	var opts options.Options
+	if r.Options != nil && r.Options.GetTypeUrl() != "" {
+		v, err := typeurl.UnmarshalAny(r.Options)
+		if err != nil {
+			return nil, err
+		}
+		opts = *v.(*options.Options)
+	}
+
+	var mounts []process.Mount
+	for _, m := range r.Rootfs {
+		mounts = append(mounts, process.Mount{
+			Type:    m.Type,
+			Source:  m.Source,
+			Target:  m.Target,
+			Options: m.Options,
+		})
+	}
+
+	rootfs := ""
+	if len(mounts) > 0 {
+		rootfs = filepath.Join(r.Bundle, "rootfs")
+		if err := os.Mkdir(rootfs, 0711); err != nil && !os.IsExist(err) {
+			return nil, err
+		}
+	}
+
+	config := &process.CreateConfig{
+		ID:               r.ID,
+		Bundle:           r.Bundle,
+		Runtime:          opts.BinaryName,
+		Rootfs:           mounts,
+		Terminal:         r.Terminal,
+		Stdin:            r.Stdin,
+		Stdout:           r.Stdout,
+		Stderr:           r.Stderr,
+		Checkpoint:       r.Checkpoint,
+		ParentCheckpoint: r.ParentCheckpoint,
+		Options:          r.Options,
+	}
+
+	if err := WriteOptions(r.Bundle, opts); err != nil {
+		return nil, err
+	}
+	// For historical reason, we write opts.BinaryName as well as the entire opts
+	if err := WriteRuntime(r.Bundle, opts.BinaryName); err != nil {
+		return nil, err
+	}
+	defer func() {
+		if retErr != nil {
+			if err := mount.UnmountAll(rootfs, 0); err != nil {
+				logrus.WithError(err).Warn("failed to cleanup rootfs mount")
+			}
+		}
+	}()
+	for _, rm := range mounts {
+		m := &mount.Mount{
+			Type:    rm.Type,
+			Source:  rm.Source,
+			Options: rm.Options,
+		}
+		if err := m.Mount(rootfs); err != nil {
+			return nil, errors.Wrapf(err, "failed to mount rootfs component %v", m)
+		}
+	}
+
+-	// 创建Process对象，代表container里的process
+	p, err := newInit(
+		ctx,
+		r.Bundle,
+		filepath.Join(r.Bundle, "work"),
+		ns,
+		platform,
+		config,
+		&opts,
+		rootfs,
+	)
+	if err != nil {
+		return nil, errdefs.ToGRPC(err)
+	}
+-	// 
+	if err := p.Create(ctx, config); err != nil {
+		return nil, errdefs.ToGRPC(err)
+	}
+	container := &Container{
+		ID:              r.ID,
+		Bundle:          r.Bundle,
+		process:         p,
+		processes:       make(map[string]process.Process),
+		reservedProcess: make(map[string]struct{}),
+	}
+	pid := p.Pid()
+	if pid > 0 {
+		var cg interface{}
+		if cgroups.Mode() == cgroups.Unified {
+			g, err := cgroupsv2.PidGroupPath(pid)
+			if err != nil {
+				logrus.WithError(err).Errorf("loading cgroup2 for %d", pid)
+				return container, nil
+			}
+			cg, err = cgroupsv2.LoadManager("/sys/fs/cgroup", g)
+			if err != nil {
+				logrus.WithError(err).Errorf("loading cgroup2 for %d", pid)
+			}
+		} else {
+			cg, err = cgroups.Load(cgroups.V1, cgroups.PidPath(pid))
+			if err != nil {
+				logrus.WithError(err).Errorf("loading cgroup for %d", pid)
+			}
+		}
+		container.cgroup = cg
+	}
+	return container, nil
+}
+```
+>>> ***p.Create(ctx, config)***
+```diff
+// Create the process with the provided config
+func (p *Init) Create(ctx context.Context, r *CreateConfig) error {
+	var (
+		err     error
+		socket  *runc.Socket
+		pio     *processIO
+		pidFile = newPidFile(p.Bundle)
+	)
+
+	if r.Terminal {
+		if socket, err = runc.NewTempConsoleSocket(); err != nil {
+			return errors.Wrap(err, "failed to create OCI runtime console socket")
+		}
+		defer socket.Close()
+	} else {
+		if pio, err = createIO(ctx, p.id, p.IoUID, p.IoGID, p.stdio); err != nil {
+			return errors.Wrap(err, "failed to create init process I/O")
+		}
+		p.io = pio
+	}
+	if r.Checkpoint != "" {
+		return p.createCheckpointedState(r, pidFile)
+	}
+	opts := &runc.CreateOpts{
+		PidFile:      pidFile.Path(),
+		NoPivot:      p.NoPivotRoot,
+		NoNewKeyring: p.NoNewKeyring,
+	}
+	if p.io != nil {
+		opts.IO = p.io.IO()
+	}
+	if socket != nil {
+		opts.ConsoleSocket = socket
+	}
+	if err := p.runtime.Create(ctx, r.ID, r.Bundle, opts); err != nil {
+		return p.runtimeError(err, "OCI runtime create failed")
+	}
+	if r.Stdin != "" {
+		if err := p.openStdin(r.Stdin); err != nil {
+			return err
+		}
+	}
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	if socket != nil {
+		console, err := socket.ReceiveMaster()
+		if err != nil {
+			return errors.Wrap(err, "failed to retrieve console master")
+		}
+		console, err = p.Platform.CopyConsole(ctx, console, p.id, r.Stdin, r.Stdout, r.Stderr, &p.wg)
+		if err != nil {
+			return errors.Wrap(err, "failed to start console copy")
+		}
+		p.console = console
+	} else {
+		if err := pio.Copy(ctx, &p.wg); err != nil {
+			return errors.Wrap(err, "failed to start io pipe copy")
+		}
+	}
+	pid, err := pidFile.Read()
+	if err != nil {
+		return errors.Wrap(err, "failed to retrieve OCI runtime container pid")
+	}
+	p.pid = pid
+	return nil
 }
 ```
 
