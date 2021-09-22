@@ -1020,6 +1020,7 @@ func (s *createdState) Start(ctx context.Context) error {
 +	if err := s.p.start(ctx); err != nil {
 		return err
 	}
+-	// 状态改为running	
 +	return s.transition("running")
 }
 ```
@@ -1027,13 +1028,14 @@ func (s *createdState) Start(ctx context.Context) error {
 - ***s.p.start***
 ```diff
 func (p *Init) start(ctx context.Context) error {
--	// p.runtime是runc.Runc
+-	// p.runtime是runc.Runc，实际运行Runc.Start
 	err := p.runtime.Start(ctx, p.id)
 	return p.runtimeError(err, "OCI runtime start failed")
 }
 
 // Start will start an already created container
 func (r *Runc) Start(context context.Context, id string) error {
+-	// 运行runc start id
 	return r.runOrError(r.command(context, "start", id))
 }
 ```
