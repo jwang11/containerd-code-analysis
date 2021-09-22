@@ -70,7 +70,8 @@ func run(id string, initFunc Init, config Config) error {
 	ctx = context.WithValue(ctx, OptsKey{}, Opts{BundlePath: bundlePath, Debug: debugFlag})
 	ctx = log.WithLogger(ctx, log.G(ctx).WithField("runtime", id))
 	ctx, cancel := context.WithCancel(ctx)
-+	service, err := initFunc(ctx, idFlag, publisher, cancel)
+-	// 创建task service	
+	service, err := initFunc(ctx, idFlag, publisher, cancel)
 	if err != nil {
 		return err
 	}
@@ -102,7 +103,7 @@ func run(id string, initFunc Init, config Config) error {
 			Address:          addressFlag,
 			TTRPCAddress:     ttrpcAddress,
 		}
--		// 启动gRPC服务
+-		// 启动一个新的shim进程
 		address, err := service.StartShim(ctx, opts)
 		if err != nil {
 			return err
@@ -129,7 +130,7 @@ func run(id string, initFunc Init, config Config) error {
 		},
 	})
 
--	// ttRPC服务
+-	// 注册TTRPCPlugin
 	// If service is an implementation of the task service, register it as a plugin
 	if ts, ok := service.(shimapi.TaskService); ok {
 		plugin.Register(&plugin.Registration{
@@ -194,18 +195,20 @@ func run(id string, initFunc Init, config Config) error {
 			ttrpcServices = append(ttrpcServices, src)
 		}
 	}
-
+-	// 创建ttRPC server
 	server, err := newServer()
 	if err != nil {
 		return errors.Wrap(err, "failed creating server")
 	}
 
+-	// 调用每个service的RegisterTTRPC方法，完成初始化
 	for _, srv := range ttrpcServices {
 		if err := srv.RegisterTTRPC(server); err != nil {
 			return errors.Wrap(err, "failed to register service")
 		}
 	}
 
+-	// 监听服务端口，ttRPC服务正式上线
 	if err := serve(ctx, server, signals); err != nil {
 		if err != context.Canceled {
 			return err
@@ -291,7 +294,7 @@ func serveListener(path string) (net.Listener, error) {
 }
 ```
 
-### [v2.New](https://github.com/containerd/containerd/blob/main/runtime/v2/runc/v2/service.go)生成shim_runc_v2服务
+### [v2.New](https://github.com/containerd/containerd/blob/main/runtime/v2/runc/v2/service.go)生成task service服务
 ```
 // New returns a new shim service that can be used via GRPC
 func New(ctx context.Context, id string, publisher shim.Publisher, shutdown func()) (shim.Shim, error) {
