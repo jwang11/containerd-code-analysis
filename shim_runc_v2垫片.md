@@ -545,7 +545,7 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	container, err := runc.NewContainer(ctx, s.platform, r)
++	container, err := runc.NewContainer(ctx, s.platform, r)
 	if err != nil {
 		return nil, err
 	}
@@ -660,7 +660,7 @@ func NewContainer(ctx context.Context, platform stdio.Platform, r *task.CreateTa
 	if err != nil {
 		return nil, errdefs.ToGRPC(err)
 	}
--	// 
+-	// p是Init,运行Init.Create
 	if err := p.Create(ctx, config); err != nil {
 		return nil, errdefs.ToGRPC(err)
 	}
@@ -695,6 +695,64 @@ func NewContainer(ctx context.Context, platform stdio.Platform, r *task.CreateTa
 	return container, nil
 }
 ```
+>>> ***newInit***
+```diff
+func newInit(ctx context.Context, path, workDir, namespace string, platform stdio.Platform,
+	r *process.CreateConfig, options *options.Options, rootfs string) (*process.Init, error) {
++	runtime := process.NewRunc(options.Root, path, namespace, options.BinaryName, options.CriuPath, options.SystemdCgroup)
++	p := process.New(r.ID, runtime, stdio.Stdio{
+		Stdin:    r.Stdin,
+		Stdout:   r.Stdout,
+		Stderr:   r.Stderr,
+		Terminal: r.Terminal,
+	})
+	p.Bundle = r.Bundle
+	p.Platform = platform
+	p.Rootfs = rootfs
+	p.WorkDir = workDir
+	p.IoUID = int(options.IoUid)
+	p.IoGID = int(options.IoGid)
+	p.NoPivotRoot = options.NoPivotRoot
+	p.NoNewKeyring = options.NoNewKeyring
+	p.CriuWorkPath = options.CriuWorkPath
+	if p.CriuWorkPath == "" {
+		// if criu work path not set, use container WorkDir
+		p.CriuWorkPath = p.WorkDir
+	}
+	return p, nil
+}
+
+// NewRunc returns a new runc instance for a process
+func NewRunc(root, path, namespace, runtime, criu string, systemd bool) *runc.Runc {
+	if root == "" {
+		root = RuncRoot
+	}
+	return &runc.Runc{
+		Command:       runtime,
+		Log:           filepath.Join(path, "log.json"),
+		LogFormat:     runc.JSON,
+		PdeathSignal:  unix.SIGKILL,
+		Root:          filepath.Join(root, namespace),
+		Criu:          criu,
+		SystemdCgroup: systemd,
+	}
+}
+
+// New returns a new process
+func New(id string, runtime *runc.Runc, stdio stdio.Stdio) *Init {
+	p := &Init{
+		id:        id,
+		runtime:   runtime,
+		pausing:   new(atomicBool),
+		stdio:     stdio,
+		status:    0,
+		waitBlock: make(chan struct{}),
+	}
+	p.initState = &createdState{p: p}
+	return p
+}
+```
+
 >>> ***p.Create(ctx, config)***
 ```diff
 // Create the process with the provided config
@@ -729,8 +787,10 @@ func (p *Init) Create(ctx context.Context, r *CreateConfig) error {
 		opts.IO = p.io.IO()
 	}
 	if socket != nil {
+-		// 设置console socket，这个socket会把runc container里的pty的master fd传出来。	
 		opts.ConsoleSocket = socket
 	}
+-	// p.runtime是runc.Runc	
 	if err := p.runtime.Create(ctx, r.ID, r.Bundle, opts); err != nil {
 		return p.runtimeError(err, "OCI runtime create failed")
 	}
@@ -742,10 +802,12 @@ func (p *Init) Create(ctx context.Context, r *CreateConfig) error {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	if socket != nil {
+-		// 获取到pty的master fd	
 		console, err := socket.ReceiveMaster()
 		if err != nil {
 			return errors.Wrap(err, "failed to retrieve console master")
 		}
+-		// 从master fd获取stdin和stdout，交给fifo处理		
 		console, err = p.Platform.CopyConsole(ctx, console, p.id, r.Stdin, r.Stdout, r.Stderr, &p.wg)
 		if err != nil {
 			return errors.Wrap(err, "failed to start console copy")
@@ -765,31 +827,94 @@ func (p *Init) Create(ctx context.Context, r *CreateConfig) error {
 }
 ```
 
-- ***Start***
+>>>> ***p.runtime.Create()***
+```diff
+// Create creates a new container and returns its pid if it was created successfully
+func (r *Runc) Create(context context.Context, id, bundle string, opts *CreateOpts) error {
+	args := []string{"create", "--bundle", bundle}
+	if opts != nil {
+		oargs, err := opts.args()
+		if err != nil {
+			return err
+		}
+		args = append(args, oargs...)
+	}
+	cmd := r.command(context, append(args, id)...)
+	if opts != nil && opts.IO != nil {
+		opts.Set(cmd)
+	}
+	cmd.ExtraFiles = opts.ExtraFiles
+
+	if cmd.Stdout == nil && cmd.Stderr == nil {
+		data, err := cmdOutput(cmd, true, nil)
+		defer putBuf(data)
+		if err != nil {
+			return fmt.Errorf("%s: %s", err, data.String())
+		}
+		return nil
+	}
+-	// 执行runc create --bundle命令	
+	ec, err := Monitor.Start(cmd)
+	if err != nil {
+		return err
+	}
+	if opts != nil && opts.IO != nil {
+		if c, ok := opts.IO.(StartCloser); ok {
+			if err := c.CloseAfterStart(); err != nil {
+				return err
+			}
+		}
+	}
+	status, err := Monitor.Wait(cmd, ec)
+	if err == nil && status != 0 {
+		err = fmt.Errorf("%s did not terminate successfully: %w", cmd.Args[0], &ExitError{status})
+	}
+	return err
+}
+```
+
+### Service.Start启动container
 ```diff
 // Start a process
 func (s *service) Start(ctx context.Context, r *taskAPI.StartRequest) (*taskAPI.StartResponse, error) {
-	container, err := s.getContainer()
++	container, err := s.getContainer(r.ID)
 	if err != nil {
 		return nil, err
 	}
 
 	// hold the send lock so that the start events are sent before any exit events in the error case
 	s.eventSendMu.Lock()
-	p, err := container.Start(ctx, r)
++	p, err := container.Start(ctx, r)
 	if err != nil {
 		s.eventSendMu.Unlock()
 		return nil, errdefs.ToGRPC(err)
 	}
+
 	switch r.ExecID {
 	case "":
-		if cg, ok := container.Cgroup().(cgroups.Cgroup); ok {
+		switch cg := container.Cgroup().(type) {
+		case cgroups.Cgroup:
 			if err := s.ep.Add(container.ID, cg); err != nil {
 				logrus.WithError(err).Error("add cg to OOM monitor")
 			}
-		} else {
-			logrus.WithError(errdefs.ErrNotImplemented).Error("add cg to OOM monitor")
+		case *cgroupsv2.Manager:
+			allControllers, err := cg.RootControllers()
+			if err != nil {
+				logrus.WithError(err).Error("failed to get root controllers")
+			} else {
+				if err := cg.ToggleControllers(allControllers, cgroupsv2.Enable); err != nil {
+					if userns.RunningInUserNS() {
+						logrus.WithError(err).Debugf("failed to enable controllers (%v)", allControllers)
+					} else {
+						logrus.WithError(err).Errorf("failed to enable controllers (%v)", allControllers)
+					}
+				}
+			}
+			if err := s.ep.Add(container.ID, cg); err != nil {
+				logrus.WithError(err).Error("add cg to OOM monitor")
+			}
 		}
+
 		s.send(&eventstypes.TaskStart{
 			ContainerID: container.ID,
 			Pid:         uint32(p.Pid()),
@@ -805,5 +930,47 @@ func (s *service) Start(ctx context.Context, r *taskAPI.StartRequest) (*taskAPI.
 	return &taskAPI.StartResponse{
 		Pid: uint32(p.Pid()),
 	}, nil
+}
+```
+
+- ***start***
+```diff
+// Start a container process
+func (c *Container) Start(ctx context.Context, r *task.StartRequest) (process.Process, error) {
+	p, err := c.Process(r.ExecID)
+	if err != nil {
+		return nil, err
+	}
++	if err := p.Start(ctx); err != nil {
+		return nil, err
+	}
+	if c.Cgroup() == nil && p.Pid() > 0 {
+		var cg interface{}
+		if cgroups.Mode() == cgroups.Unified {
+			g, err := cgroupsv2.PidGroupPath(p.Pid())
+			if err != nil {
+				logrus.WithError(err).Errorf("loading cgroup2 for %d", p.Pid())
+			}
+			cg, err = cgroupsv2.LoadManager("/sys/fs/cgroup", g)
+			if err != nil {
+				logrus.WithError(err).Errorf("loading cgroup2 for %d", p.Pid())
+			}
+		} else {
+			cg, err = cgroups.Load(cgroups.V1, cgroups.PidPath(p.Pid()))
+			if err != nil {
+				logrus.WithError(err).Errorf("loading cgroup for %d", p.Pid())
+			}
+		}
+		c.cgroup = cg
+	}
+	return p, nil
+}
+
+// Start the init process
+func (p *Init) Start(ctx context.Context) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	return p.initState.Start(ctx)
 }
 ```
