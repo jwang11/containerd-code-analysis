@@ -258,8 +258,8 @@ func (m *TaskManager) startShim(ctx context.Context, bundle *Bundle, id string, 
 		topts = opts.RuntimeOptions
 	}
 
-	b := shimBinary(bundle, opts.Runtime, m.containerdAddress, m.containerdTTRPCAddress)
-	shim, err := b.Start(ctx, topts, func() {
++	b := shimBinary(bundle, opts.Runtime, m.containerdAddress, m.containerdTTRPCAddress)
++	shim, err := b.Start(ctx, topts, func() {
 		log.G(ctx).WithField("id", id).Info("shim disconnected")
 
 		cleanupAfterDeadShim(context.Background(), id, ns, m.tasks, m.events, b)
@@ -276,7 +276,98 @@ func (m *TaskManager) startShim(ctx context.Context, bundle *Bundle, id string, 
 	return shim, nil
 }
 ```
+>> ***shimBinary***和***b.Start***
+```diff
+func shimBinary(bundle *Bundle, runtime, containerdAddress string, containerdTTRPCAddress string) *binary {
+	return &binary{
+		bundle:                 bundle,
+		runtime:                runtime,
+		containerdAddress:      containerdAddress,
+		containerdTTRPCAddress: containerdTTRPCAddress,
+	}
+}
 
+type binary struct {
+	runtime                string
+	containerdAddress      string
+	containerdTTRPCAddress string
+	bundle                 *Bundle
+}
+
+func (b *binary) Start(ctx context.Context, opts *types.Any, onClose func()) (_ *shim, err error) {
+	args := []string{"-id", b.bundle.ID}
+	switch logrus.GetLevel() {
+	case logrus.DebugLevel, logrus.TraceLevel:
+		args = append(args, "-debug")
+	}
+-	// 注意，启动shim的时候，有start参数，用处在分析shim的时候讲
+	args = append(args, "start")
+
+	cmd, err := client.Command(
+		ctx,
+		b.runtime,
+		b.containerdAddress,
+		b.containerdTTRPCAddress,
+		b.bundle.Path,
+		opts,
+		args...,
+	)
+	if err != nil {
+		return nil, err
+	}
+	// Windows needs a namespace when openShimLog
+	ns, _ := namespaces.Namespace(ctx)
+	shimCtx, cancelShimLog := context.WithCancel(namespaces.WithNamespace(context.Background(), ns))
+	defer func() {
+		if err != nil {
+			cancelShimLog()
+		}
+	}()
+	f, err := openShimLog(shimCtx, b.bundle, client.AnonDialer)
+	if err != nil {
+		return nil, errors.Wrap(err, "open shim log pipe")
+	}
+	defer func() {
+		if err != nil {
+			f.Close()
+		}
+	}()
+	// open the log pipe and block until the writer is ready
+	// this helps with synchronization of the shim
+	// copy the shim's logs to containerd's output
+	go func() {
+		defer f.Close()
+		_, err := io.Copy(os.Stderr, f)
+		// To prevent flood of error messages, the expected error
+		// should be reset, like os.ErrClosed or os.ErrNotExist, which
+		// depends on platform.
+		err = checkCopyShimLogError(ctx, err)
+		if err != nil {
+			log.G(ctx).WithError(err).Error("copy shim log")
+		}
+	}()
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil, errors.Wrapf(err, "%s", out)
+	}
+	address := strings.TrimSpace(string(out))
+	conn, err := client.Connect(address, client.AnonDialer)
+	if err != nil {
+		return nil, err
+	}
+	onCloseWithShimLog := func() {
+		onClose()
+		cancelShimLog()
+		f.Close()
+	}
+	client := ttrpc.NewClient(conn, ttrpc.WithOnClose(onCloseWithShimLog))
+	return &shim{
+		bundle: b.bundle,
+		client: client,
+		task:   task.NewTaskClient(client),
+	}, nil
+}
+```
 - ***Get***和***Add***
 ```diff
 // Get a specific task
