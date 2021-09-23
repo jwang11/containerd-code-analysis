@@ -1,4 +1,4 @@
-# ctr_content_fetch过程分析
+# ctr_content_fetch镜像代码分析
 > 针对命令行$ctr content fetch image_ref的执行过程，进行代码分析，帮助理解content service。
 
 ### 命令行执行
@@ -62,20 +62,20 @@ Most of this is experimental and there are few leaps to make this work.`,
 		)
     
 -   // 创建一个基于gprc的containerd client
-+		client, ctx, cancel, err := commands.NewClient(clicontext)
+		client, ctx, cancel, err := commands.NewClient(clicontext)
 		if err != nil {
 			return err
 		}
 		defer cancel()
     
 -   // 生成fetch config    
-+		config, err := NewFetchConfig(ctx, clicontext)
+		config, err := NewFetchConfig(ctx, clicontext)
 		if err != nil {
 			return err
 		}
     
 -   // 根据fetech_config，把image ref从repo拉下来，放进content store
-+		_, err = Fetch(ctx, client, ref, config)
+		_, err = Fetch(ctx, client, ref, config)
 		return err
 	},
 }
@@ -114,7 +114,7 @@ type RemoteOpt func(*Client, *RemoteContext) error
 // NewFetchConfig returns the default FetchConfig from cli flags
 func NewFetchConfig(ctx context.Context, clicontext *cli.Context) (*FetchConfig, error) {
 -	// 根据option和系统环境建立一个Resolver，解析镜像registry的地址
-+	resolver, err := commands.GetResolver(ctx, clicontext)
+	resolver, err := commands.GetResolver(ctx, clicontext)
 	if err != nil {
 		return nil, err
 	}
@@ -145,13 +145,13 @@ func NewFetchConfig(ctx context.Context, clicontext *cli.Context) (*FetchConfig,
 	if clicontext.IsSet("max-concurrent-downloads") {
 		mcd := clicontext.Int("max-concurrent-downloads")
 -		// 设置RemoteContext.MaxConcurrentDownloads = max的函数		
-+		config.RemoteOpts = append(config.RemoteOpts, containerd.WithMaxConcurrentDownloads(mcd))
+		config.RemoteOpts = append(config.RemoteOpts, containerd.WithMaxConcurrentDownloads(mcd))
 	}
 
 	if clicontext.IsSet("max-concurrent-uploaded-layers") {
 		mcu := clicontext.Int("max-concurrent-uploaded-layers")
 -		// 设置RemoteContext.MaxConcurrentUploadedLayers = max的函数
-+		config.RemoteOpts = append(config.RemoteOpts, containerd.WithMaxConcurrentUploadedLayers(mcu))
+		config.RemoteOpts = append(config.RemoteOpts, containerd.WithMaxConcurrentUploadedLayers(mcu))
 	}
 
 	return config, nil
@@ -185,7 +185,7 @@ func GetResolver(ctx gocontext.Context, clicontext *cli.Context) (remotes.Resolv
 	}
 	
 -	// 定义ResolveOptions，目的是帮助生成Resolver
-+	options := docker.ResolverOptions{
+	options := docker.ResolverOptions{
 		Tracker: PushTracker,
 	}
 	if username != "" {
@@ -234,7 +234,7 @@ func GetResolver(ctx gocontext.Context, clicontext *cli.Context) (remotes.Resolv
 	}
 
 -	// 根据hostOptions生成ResolveOptions.hosts函数
-+	options.Hosts = config.ConfigureHosts(ctx, hostOptions)
+	options.Hosts = config.ConfigureHosts(ctx, hostOptions)
 
 -	// 根据ResolveOptions生成Docker registry的resolver
 +	return docker.NewResolver(options), nil
@@ -516,7 +516,7 @@ func Fetch(ctx context.Context, client *containerd.Client, ref string, config *F
 	}()
 
 -	// handler函数，fetch最后要调用
-+	h := images.HandlerFunc(func(ctx context.Context, desc ocispec.Descriptor) ([]ocispec.Descriptor, error) {
+	h := images.HandlerFunc(func(ctx context.Context, desc ocispec.Descriptor) ([]ocispec.Descriptor, error) {
 		if desc.MediaType != images.MediaTypeDockerSchema1Manifest {
 			ongoing.Add(desc)
 		}
@@ -526,7 +526,7 @@ func Fetch(ctx context.Context, client *containerd.Client, ref string, config *F
 	log.G(pctx).WithField("image", ref).Debug("fetching")
 	labels := commands.LabelArgs(config.Labels)
 -	// 这里定义了一组修改FetchContext的函数
-+	opts := []containerd.RemoteOpt{
+	opts := []containerd.RemoteOpt{
 		containerd.WithPullLabels(labels),
 		containerd.WithResolver(config.Resolver),
 		containerd.WithImageHandler(h),
@@ -565,7 +565,7 @@ func (c *Client) Fetch(ctx context.Context, ref string, opts ...RemoteOpt) (imag
 
 +	fetchCtx := defaultRemoteContext()
 -	// 把RemoteOpt数组里的函数执行一遍，修改client，fetchCtx
-+	for _, o := range opts {
+	for _, o := range opts {
 		if err := o(c, fetchCtx); err != nil {
 			return images.Image{}, err
 		}
@@ -599,7 +599,7 @@ func (c *Client) Fetch(ctx context.Context, ref string, opts ...RemoteOpt) (imag
 	defer done(ctx)
 
 -	// 正式开始fetch镜像
-+	img, err := c.fetch(ctx, fetchCtx, ref, 0)
+	img, err := c.fetch(ctx, fetchCtx, ref, 0)
 	if err != nil {
 		return images.Image{}, err
 	}
@@ -656,7 +656,7 @@ func (r *dockerResolver) Fetcher(ctx context.Context, ref string) (remotes.Fetch
 func (c *Client) fetch(ctx context.Context, rCtx *RemoteContext, ref string, limit int) (images.Image, error) {
 	store := c.ContentStore()
 -	// 用resovler得到image ref的descriptor
-+	name, desc, err := rCtx.Resolver.Resolve(ctx, ref)
+	name, desc, err := rCtx.Resolver.Resolve(ctx, ref)
 	if err != nil {
 		return images.Image{}, errors.Wrapf(err, "failed to resolve reference %q", ref)
 	}
@@ -674,11 +674,11 @@ func (c *Client) fetch(ctx context.Context, rCtx *RemoteContext, ref string, lim
 		limiter       *semaphore.Weighted
 	)
 -	// MediaTypeDockerSchema1Manifest = "application/vnd.docker.distribution.manifest.v1+prettyjws"
-+	if desc.MediaType == images.MediaTypeDockerSchema1Manifest && rCtx.ConvertSchema1 {
+	if desc.MediaType == images.MediaTypeDockerSchema1Manifest && rCtx.ConvertSchema1 {
 		schema1Converter := schema1.NewConverter(store, fetcher)
 
 -		// fetch处理函数包含在schema1Converter.handle函数里面
-+		handler = images.Handlers(append(rCtx.BaseHandlers, schema1Converter)...)
+		handler = images.Handlers(append(rCtx.BaseHandlers, schema1Converter)...)
 
 		isConvertible = true
 
@@ -727,7 +727,7 @@ func (c *Client) fetch(ctx context.Context, rCtx *RemoteContext, ref string, lim
 		)
 
 -		// 把所有handlers串起来，生成一个总handler
-+		handler = images.Handlers(handlers...)
+		handler = images.Handlers(handlers...)
 
 		converterFunc = func(ctx context.Context, desc ocispec.Descriptor) (ocispec.Descriptor, error) {
 			return docker.ConvertManifest(ctx, store, desc)
@@ -743,7 +743,7 @@ func (c *Client) fetch(ctx context.Context, rCtx *RemoteContext, ref string, lim
 	}
 
 -	// 运行配置好的handlers，包括content的下载，这是一个递归函数，把所有manifest里的children资源都下载
-+	if err := images.Dispatch(ctx, handler, limiter, desc); err != nil {
+	if err := images.Dispatch(ctx, handler, limiter, desc); err != nil {
 		return images.Image{}, err
 	}
 
@@ -790,7 +790,7 @@ func Dispatch(ctx context.Context, handler Handler, limiter *semaphore.Weighted,
 
 			if len(children) > 0 {
 -				// 递归下载manifest里的children资源（descriptor）			
-+				return Dispatch(ctx2, handler, limiter, children...)
+				return Dispatch(ctx2, handler, limiter, children...)
 			}
 
 			return nil
@@ -873,7 +873,7 @@ func (r *dockerResolver) Resolve(ctx context.Context, ref string) (string, ocisp
 			ctx := log.WithLogger(ctx, log.G(ctx).WithField("host", host.Host))
 
 -			// 组装对repository的http请求
-+			req := base.request(host, http.MethodHead, u...)
+			req := base.request(host, http.MethodHead, u...)
 			if err := req.addNamespace(base.refspec.Hostname()); err != nil {
 				return "", ocispec.Descriptor{}, err
 			}
@@ -884,7 +884,7 @@ func (r *dockerResolver) Resolve(ctx context.Context, ref string) (string, ocisp
 
 			log.G(ctx).Debug("resolving")
 -			// 向repo发请求，尝试一下manifests能不能取到			
-+			resp, err := req.doWithRetries(ctx, nil)
+			resp, err := req.doWithRetries(ctx, nil)
 			if err != nil {
 				if errors.Is(err, ErrInvalidAuthorization) {
 					err = errors.Wrapf(err, "pull access denied, repository does not exist or may require authorization")
@@ -1041,7 +1041,7 @@ func (r *dockerBase) request(host RegistryHost, method string, ps ...string) *re
 		header[key] = append(header[key], value...)
 	}
 -	// parts=/v2/library/nginx/manifests/latest@digest
-+	parts := append([]string{"/", host.Path, r.repository}, ps...)
+	parts := append([]string{"/", host.Path, r.repository}, ps...)
 	p := path.Join(parts...)
 	// Join strips trailing slash, re-add ending "/" if included
 	if len(parts) > 0 && strings.HasSuffix(parts[len(parts)-1], "/") {
