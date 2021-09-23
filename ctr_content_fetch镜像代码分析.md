@@ -107,7 +107,7 @@ type FetchConfig struct {
 	TraceHTTP bool
 }
 
-- RemoeteOpts是对RemoteContext的配置函数
+- // RemoeteOpts是对RemoteContext的配置函数
 // RemoteOpt allows the caller to set distribution options for a remote
 type RemoteOpt func(*Client, *RemoteContext) error
 
@@ -160,7 +160,7 @@ func NewFetchConfig(ctx context.Context, clicontext *cli.Context) (*FetchConfig,
 // WithMaxConcurrentDownloads sets max concurrent download limit.
 func WithMaxConcurrentDownloads(max int) RemoteOpt {
 	return func(client *Client, c *RemoteContext) error {
-		c.MaxConcurrentDownloads = max
++		c.MaxConcurrentDownloads = max
 		return nil
 	}
 }
@@ -168,12 +168,12 @@ func WithMaxConcurrentDownloads(max int) RemoteOpt {
 // WithMaxConcurrentUploadedLayers sets max concurrent uploaded layer limit.
 func WithMaxConcurrentUploadedLayers(max int) RemoteOpt {
 	return func(client *Client, c *RemoteContext) error {
-		c.MaxConcurrentUploadedLayers = max
++		c.MaxConcurrentUploadedLayers = max
 		return nil
 	}
 }
 ```
-> ***NewFetchConfig -> GetResolver***
+>> ***NewFetchConfig -> GetResolver***
 ```diff
 // GetResolver prepares the resolver from the environment and options
 func GetResolver(ctx gocontext.Context, clicontext *cli.Context) (remotes.Resolver, error) {
@@ -204,8 +204,8 @@ func GetResolver(ctx gocontext.Context, clicontext *cli.Context) (remotes.Resolv
 		secret = rt
 	}
 
--	// 定义HostOptions帮助产生RegistryHost函数，该函数可以产生一系列可能的registry host地址
-+	hostOptions := config.HostOptions{}
+-	// 定义HostOptions，它帮助配置RegistryHost，该函数可以产生一系列可能的registry host地址
+	hostOptions := config.HostOptions{}
 	hostOptions.Credentials = func(host string) (string, string, error) {
 		// If host doesn't match...
 		// Only one host
@@ -233,15 +233,25 @@ func GetResolver(ctx gocontext.Context, clicontext *cli.Context) (remotes.Resolv
 		}
 	}
 
--	// 根据hostOptions生成ResolveOptions.hosts函数
-	options.Hosts = config.ConfigureHosts(ctx, hostOptions)
+-	// 根据hostOptions生成ResolveOptions.Hosts函数
++	options.Hosts = config.ConfigureHosts(ctx, hostOptions)
 
 -	// 根据ResolveOptions生成Docker registry的resolver
 +	return docker.NewResolver(options), nil
 }
+
+// HostOptions is used to configure registry hosts
+type HostOptions struct {
+	HostDir       func(string) (string, error)
+	Credentials   func(host string) (string, string, error)
+	DefaultTLS    *tls.Config
+	DefaultScheme string
+	// UpdateClient will be called after creating http.Client object, so clients can provide extra configuration
+	UpdateClient UpdateClientFunc
+}
 ```
 
->> ***NewFetchConfig -> GetResolver -> config.ConfigureHosts***
+>>> ***NewFetchConfig -> GetResolver -> config.ConfigureHosts***
 ```diff
 type hostConfig struct {
 	scheme string
@@ -301,6 +311,7 @@ func ConfigureHosts(ctx context.Context, options HostOptions) docker.RegistryHos
 		}
 		if len(hosts) > 0 && hosts[len(hosts)-1].host == "" {
 			if host == "docker.io" {
+-				// 如果是docker.io，把路径补齐			
 				hosts[len(hosts)-1].scheme = "https"
 				hosts[len(hosts)-1].host = "registry-1.docker.io"
 			} else {
@@ -311,6 +322,7 @@ func ConfigureHosts(ctx context.Context, options HostOptions) docker.RegistryHos
 					hosts[len(hosts)-1].scheme = "https"
 				}
 			}
+-			// 加上v2，结合schema和host，目前访问路径https://registry-1.docker.io/v2			
 			hosts[len(hosts)-1].path = "/v2"
 			hosts[len(hosts)-1].capabilities = docker.HostCapabilityPull | docker.HostCapabilityResolve | docker.HostCapabilityPush
 		}
@@ -349,6 +361,7 @@ func ConfigureHosts(ctx context.Context, options HostOptions) docker.RegistryHos
 		if options.Credentials != nil {
 			authOpts = append(authOpts, docker.WithAuthCreds(options.Credentials))
 		}
+-		// 生成authorizer，处理访问registry时的认证		
 		authorizer := docker.NewDockerAuthorizer(authOpts...)
 
 		rhosts := make([]docker.RegistryHost, len(hosts))
@@ -432,7 +445,7 @@ func ConfigureHosts(ctx context.Context, options HostOptions) docker.RegistryHos
 }
 ```
 
->> ***NewFetchConfig -> GetResolver -> docker.NewResolver***
+>>> ***NewFetchConfig -> GetResolver -> docker.NewResolver***
 ```
 // NewResolver returns a new resolver to a Docker registry
 func NewResolver(options ResolverOptions) remotes.Resolver {
