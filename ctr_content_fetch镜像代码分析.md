@@ -460,6 +460,7 @@ func NewResolver(options ResolverOptions) remotes.Resolver {
 		options.Headers.Set("User-Agent", "containerd/"+version.Version)
 	}
 
+-	// 按照oci runtime spec，生成resolve的http请求header, accept里设置所有支持的类型，和registry进行协商
 	resolveHeader := http.Header{}
 	if _, ok := options.Headers["Accept"]; !ok {
 		// set headers for all the types we support for resolution.
@@ -507,7 +508,8 @@ func NewResolver(options ResolverOptions) remotes.Resolver {
 }
 ```
 
-- ***Fetch***
+### Fetch
+FetchConfig准备工作完成，开始Fetch
 ```diff
 // Fetch loads all resources into the content store and returns the image
 func Fetch(ctx context.Context, client *containerd.Client, ref string, config *FetchConfig) (images.Image, error) {
