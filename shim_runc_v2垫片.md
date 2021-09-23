@@ -1,5 +1,5 @@
 # shim_runc_v2垫片代码分析
-> containerd shim_runc_v2是containerd shim的v2版本。shim进程是用来“垫”在containerd和runc启动的容器之间的，其主要作用是：
+> shim_runc_v2是containerd shim的v2版本。shim是containerd之外的独立进程，用来“垫”在containerd和runc启动的容器之间的，其主要作用是：
 > 1. 和containerd端的runtime_v2服务交互，调用runc命令创建、启动、停止、删除容器等
 > 2. 作为容器的父进程，当容器中的第一个实例进程被杀死后，负责给其子进程收尸，避免出现僵尸进程
 > 3. 监控容器中运行的进程状态，当容器执行完成后，通过exit fifo文件来返回容器进程结束状态
@@ -29,6 +29,20 @@ func Run(id string, initFunc Init, opts ...BinaryOpts) {
 	}
 }
 
+func parseFlags() {
+	flag.BoolVar(&debugFlag, "debug", false, "enable debug output in logs")
+	flag.BoolVar(&versionFlag, "v", false, "show the shim version and exit")
+	flag.StringVar(&namespaceFlag, "namespace", "", "namespace that owns the shim")
+	flag.StringVar(&idFlag, "id", "", "id of the task")
+	flag.StringVar(&socketFlag, "socket", "", "socket path to serve")
+	flag.StringVar(&bundlePath, "bundle", "", "path to the bundle if not workdir")
+
+	flag.StringVar(&addressFlag, "address", "", "grpc address back to main containerd")
+	flag.StringVar(&containerdBinaryFlag, "publish-binary", "containerd", "path to publish binary (used for publishing events)")
+
+	flag.Parse()
+	action = flag.Arg(0)
+}
 
 func run(id string, initFunc Init, config Config) error {
 	parseFlags()
@@ -59,6 +73,7 @@ func run(id string, initFunc Init, config Config) error {
 		}
 	}
 
+-	// 环境变量得到ttrpc address
 	ttrpcAddress := os.Getenv(ttrpcAddressEnv)
 	publisher, err := NewPublisher(ttrpcAddress)
 	if err != nil {
@@ -409,11 +424,13 @@ func (s *service) StartShim(ctx context.Context, opts shim.StartOpts) (_ string,
 			break
 		}
 	}
+-	// 生成一个新的socket地址给ttRPC server，如/var/run/containerd/2a1ba987aebca5dfa3c99d9158ded473538eb5d2e9a320baf5bcf55abb50a308
 	address, err := shim.SocketAddress(ctx, opts.Address, grouping)
 	if err != nil {
 		return "", err
 	}
 
+-	// 打开address，监听socket地址，注意，这时候socket的fd=3
 	socket, err := shim.NewSocket(address)
 	if err != nil {
 		// the only time where this would happen is if there is a bug and the socket
@@ -454,7 +471,7 @@ func (s *service) StartShim(ctx context.Context, opts shim.StartOpts) (_ string,
 	}
 
 	cmd.ExtraFiles = append(cmd.ExtraFiles, f)
-
+-	// 启动命令
 	if err := cmd.Start(); err != nil {
 		f.Close()
 		return "", err
@@ -507,7 +524,7 @@ func (s *service) StartShim(ctx context.Context, opts shim.StartOpts) (_ string,
 	return address, nil
 }
 ```
->> ***newCommand***
+>> ***newCommand***，***SocketAddress***
 ```diff
 func newCommand(ctx context.Context, id, containerdBinary, containerdAddress, containerdTTRPCAddress string) (*exec.Cmd, error) {
 	ns, err := namespaces.NamespaceRequired(ctx)
@@ -534,6 +551,18 @@ func newCommand(ctx context.Context, id, containerdBinary, containerdAddress, co
 		Setpgid: true,
 	}
 	return cmd, nil
+}
+
+const socketRoot = defaults.DefaultStateDir
+
+// SocketAddress returns a socket address
+func SocketAddress(ctx context.Context, socketPath, id string) (string, error) {
+	ns, err := namespaces.NamespaceRequired(ctx)
+	if err != nil {
+		return "", err
+	}
+	d := sha256.Sum256([]byte(filepath.Join(socketPath, ns, id)))
+	return fmt.Sprintf("unix://%s/%x", filepath.Join(socketRoot, "s"), d), nil
 }
 ```
 
