@@ -107,7 +107,7 @@ type FetchConfig struct {
 	TraceHTTP bool
 }
 
-+ RemoeteOpts是对RemoteContext的修改函数
+- RemoeteOpts是对RemoteContext的配置函数
 // RemoteOpt allows the caller to set distribution options for a remote
 type RemoteOpt func(*Client, *RemoteContext) error
 
