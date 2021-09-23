@@ -61,20 +61,20 @@ Most of this is experimental and there are few leaps to make this work.`,
 			ref = clicontext.Args().First()
 		)
     
--   // 创建一个基于gprc的containerd client
+-   		// 创建一个基于gprc的containerd client
 		client, ctx, cancel, err := commands.NewClient(clicontext)
 		if err != nil {
 			return err
 		}
 		defer cancel()
     
--   // 生成fetch config    
+-   		// 生成fetch config    
 		config, err := NewFetchConfig(ctx, clicontext)
 		if err != nil {
 			return err
 		}
     
--   // 根据fetech_config，把image ref从repo拉下来，放进content store
+-   		// 根据fetech_config，把image ref从repo拉下来，放进content store
 		_, err = Fetch(ctx, client, ref, config)
 		return err
 	},
