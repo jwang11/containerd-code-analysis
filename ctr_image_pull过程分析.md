@@ -1,4 +1,4 @@
-# ctr_image_pull过程分析
+# ctr image pull镜像过程分析
 > 针对命令行$ctr image pull image_ref的执行过程，进行代码分析，帮助理解content service，image service和snapshotter。
 
 ### 命令行执行
