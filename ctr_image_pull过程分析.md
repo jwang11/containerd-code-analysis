@@ -14,7 +14,7 @@ elapsed: 9.9 s                                                                  
 unpacking linux/amd64 sha256:10cbddb6cf8568f56584ccb6c866203e68ab8e621bb87038e254f6f27f955bbe...
 done: 638.102235ms
 ```
-- 命令**help***
+- 命令***help***
 ```diff
 ctr image pull --help
 NAME:
