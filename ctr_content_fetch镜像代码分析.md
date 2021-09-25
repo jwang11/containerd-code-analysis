@@ -792,8 +792,8 @@ func Dispatch(ctx context.Context, handler Handler, limiter *semaphore.Weighted,
 
 		eg.Go(func() error {
 			desc := desc
-
-+			children, err := handler.Handle(ctx2, desc)
+-			// 对每个descriptor，运行handler里定义的处理函数。
+			children, err := handler.Handle(ctx2, desc)
 			if limiter != nil {
 				limiter.Release(1)
 			}
@@ -805,7 +805,7 @@ func Dispatch(ctx context.Context, handler Handler, limiter *semaphore.Weighted,
 			}
 
 			if len(children) > 0 {
--				// 递归下载manifest里的children资源（descriptor）			
+-				// 深度优先，递归下载manifest里的children资源（descriptor）			
 				return Dispatch(ctx2, handler, limiter, children...)
 			}
 
@@ -899,7 +899,7 @@ func (r *dockerResolver) Resolve(ctx context.Context, ref string) (string, ocisp
 			}
 
 			log.G(ctx).Debug("resolving")
--			// 向repo发请求，尝试一下manifests能不能取到			
+-			// 向registry发请求，尝试一下manifests能不能取到			
 			resp, err := req.doWithRetries(ctx, nil)
 			if err != nil {
 				if errors.Is(err, ErrInvalidAuthorization) {
@@ -928,6 +928,7 @@ func (r *dockerResolver) Resolve(ctx context.Context, ref string) (string, ocisp
 				}
 				return "", ocispec.Descriptor{}, errors.Errorf("pulling from host %s failed with unexpected status code %v: %v", host.Host, u, resp.Status)
 			}
+-			// 从response的headerd得到content length和size			
 			size := resp.ContentLength
 			contentType := getManifestMediaType(resp)
 
@@ -944,13 +945,14 @@ func (r *dockerResolver) Resolve(ctx context.Context, ref string) (string, ocisp
 					if err := dgstHeader.Validate(); err != nil {
 						return "", ocispec.Descriptor{}, errors.Wrapf(err, "%q in header not a valid digest", dgstHeader)
 					}
+-					// 得到digest					
 					dgst = dgstHeader
 				}
 			}
 			if dgst == "" || size == -1 {
 				log.G(ctx).Debug("no Docker-Content-Digest header, fetching manifest instead")
 
-+				req = base.request(host, http.MethodGet, u...)
+				req = base.request(host, http.MethodGet, u...)
 				if err := req.addNamespace(base.refspec.Hostname()); err != nil {
 					return "", ocispec.Descriptor{}, err
 				}
@@ -959,6 +961,7 @@ func (r *dockerResolver) Resolve(ctx context.Context, ref string) (string, ocisp
 					req.header[key] = append(req.header[key], value...)
 				}
 
+
 				resp, err := req.doWithRetries(ctx, nil)
 				if err != nil {
 					return "", ocispec.Descriptor{}, err
@@ -966,7 +969,7 @@ func (r *dockerResolver) Resolve(ctx context.Context, ref string) (string, ocisp
 				defer resp.Body.Close()
 
 				bodyReader := countingReader{reader: resp.Body}
-
+-				// 从response得到contentType
 				contentType = getManifestMediaType(resp)
 				if dgst == "" {
 					if contentType == images.MediaTypeDockerSchema1Manifest {
@@ -976,7 +979,7 @@ func (r *dockerResolver) Resolve(ctx context.Context, ref string) (string, ocisp
 						}
 
 						dgst = digest.FromBytes(b)
-					} else {
+					} else {					
 						dgst, err = digest.FromReader(&bodyReader)
 						if err != nil {
 							return "", ocispec.Descriptor{}, err
@@ -995,6 +998,7 @@ func (r *dockerResolver) Resolve(ctx context.Context, ref string) (string, ocisp
 				continue
 			}
 
+-			// 返回构造的根descriptor
 			desc := ocispec.Descriptor{
 				Digest:    dgst,
 				MediaType: contentType,
@@ -1173,7 +1177,7 @@ func (r Spec) Hostname() string {
 }
 ```
 
-- ***FetchHandler是负责fetch所有的content，并且把它们放进content store***
+- ***FetchHandler是负责fetch所有的content，放进content store***
 ```diff
 // FetchHandler returns a handler that will fetch all content into the ingester
 // discovered in a call to Dispatch. Use with ChildrenHandler to do a full
@@ -1231,7 +1235,7 @@ func fetch(ctx context.Context, ingester content.Ingester, fetcher Fetcher, desc
 		return nil
 	}
 
-	rc, err := fetcher.Fetch(ctx, desc)
++	rc, err := fetcher.Fetch(ctx, desc)
 	if err != nil {
 		return err
 	}
