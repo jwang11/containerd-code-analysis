@@ -1180,11 +1180,12 @@ func fetch(ctx context.Context, ingester content.Ingester, fetcher Fetcher, desc
 	}
 	defer rc.Close()
 
-	return content.Copy(ctx, cw, rc, desc.Size, desc.Digest)
+-	// 把下载得到的blob放入content store。reader直接拷入writer 
++	return content.Copy(ctx, cw, rc, desc.Size, desc.Digest)
 }
 ```
 
->> ***FetchHandler -> fetch -> fetcher.Fetch***
+>> ***FetchHandler -> fetch -> Fetch(ctx, desc)***
 ```diff
 func (r dockerFetcher) Fetch(ctx context.Context, desc ocispec.Descriptor) (io.ReadCloser, error) {
 	ctx = log.WithLogger(ctx, log.G(ctx).WithField("digest", desc.Digest))
@@ -1298,7 +1299,7 @@ func (r dockerFetcher) Fetch(ctx context.Context, desc ocispec.Descriptor) (io.R
 }
 ```
 
->> ***r.open(ctx, req, desc.MediaType, offset)***
+>>> ***FetchHandler -> fetch -> Fetch(ctx, desc) -> r.open(ctx, req, desc.MediaType, offset)***
 ```diff
 func (r dockerFetcher) open(ctx context.Context, req *request, mediatype string, offset int64) (_ io.ReadCloser, retErr error) {
 	req.header.Set("Accept", strings.Join([]string{mediatype, `*/*`}, ", "))
@@ -1309,7 +1310,7 @@ func (r dockerFetcher) open(ctx context.Context, req *request, mediatype string,
 		// range must always be checked.
 		req.header.Set("Range", fmt.Sprintf("bytes=%d-", offset))
 	}
-
+-	// 开始请求下载
 	resp, err := req.doWithRetries(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -1361,5 +1362,46 @@ func (r dockerFetcher) open(ctx context.Context, req *request, mediatype string,
 	}
 
 	return resp.Body, nil
+}
+```
+
+>> ***FetchHandler -> fetch -> content.Copy(ctx, cw, rc, desc.Size, desc.Digest)***
+```diff
+// Copy copies data with the expected digest from the reader into the
+// provided content store writer. This copy commits the writer.
+//
+// This is useful when the digest and size are known beforehand. When
+// the size or digest is unknown, these values may be empty.
+//
+// Copy is buffered, so no need to wrap reader in buffered io.
+func Copy(ctx context.Context, cw Writer, r io.Reader, size int64, expected digest.Digest, opts ...Opt) error {
+	ws, err := cw.Status()
+	if err != nil {
+		return errors.Wrap(err, "failed to get status")
+	}
+
+	if ws.Offset > 0 {
+		r, err = seekReader(r, ws.Offset, size)
+		if err != nil {
+			return errors.Wrapf(err, "unable to resume write to %v", ws.Ref)
+		}
+	}
+
+	copied, err := copyWithBuffer(cw, r)
+	if err != nil {
+		return errors.Wrap(err, "failed to copy")
+	}
+	if size != 0 && copied < size-ws.Offset {
+		// Short writes would return its own error, this indicates a read failure
+		return errors.Wrapf(io.ErrUnexpectedEOF, "failed to read expected number of bytes")
+	}
+
+	if err := cw.Commit(ctx, size, expected, opts...); err != nil {
+		if !errdefs.IsAlreadyExists(err) {
+			return errors.Wrapf(err, "failed commit on ref %q", ws.Ref)
+		}
+	}
+
+	return nil
 }
 ```
