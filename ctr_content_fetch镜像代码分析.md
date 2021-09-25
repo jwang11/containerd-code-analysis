@@ -1251,7 +1251,7 @@ func (r dockerFetcher) Fetch(ctx context.Context, desc ocispec.Descriptor) (io.R
 					return nil, err
 				}
 
-				rc, err := r.open(ctx, req, desc.MediaType, offset)
++				rc, err := r.open(ctx, req, desc.MediaType, offset)
 				if err != nil {
 					// Store the error for referencing later
 					if firstErr == nil {
@@ -1274,7 +1274,7 @@ func (r dockerFetcher) Fetch(ctx context.Context, desc ocispec.Descriptor) (io.R
 				return nil, err
 			}
 
-			rc, err := r.open(ctx, req, desc.MediaType, offset)
++			rc, err := r.open(ctx, req, desc.MediaType, offset)
 			if err != nil {
 				// Store the error for referencing later
 				if firstErr == nil {
@@ -1295,5 +1295,71 @@ func (r dockerFetcher) Fetch(ctx context.Context, desc ocispec.Descriptor) (io.R
 		return nil, firstErr
 
 	})
+}
+```
+
+>> ***r.open(ctx, req, desc.MediaType, offset)***
+```diff
+func (r dockerFetcher) open(ctx context.Context, req *request, mediatype string, offset int64) (_ io.ReadCloser, retErr error) {
+	req.header.Set("Accept", strings.Join([]string{mediatype, `*/*`}, ", "))
+
+	if offset > 0 {
+		// Note: "Accept-Ranges: bytes" cannot be trusted as some endpoints
+		// will return the header without supporting the range. The content
+		// range must always be checked.
+		req.header.Set("Range", fmt.Sprintf("bytes=%d-", offset))
+	}
+
+	resp, err := req.doWithRetries(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if retErr != nil {
+			resp.Body.Close()
+		}
+	}()
+
+	if resp.StatusCode > 299 {
+		// TODO(stevvooe): When doing a offset specific request, we should
+		// really distinguish between a 206 and a 200. In the case of 200, we
+		// can discard the bytes, hiding the seek behavior from the
+		// implementation.
+
+		if resp.StatusCode == http.StatusNotFound {
+			return nil, errors.Wrapf(errdefs.ErrNotFound, "content at %v not found", req.String())
+		}
+		var registryErr Errors
+		if err := json.NewDecoder(resp.Body).Decode(&registryErr); err != nil || registryErr.Len() < 1 {
+			return nil, errors.Errorf("unexpected status code %v: %v", req.String(), resp.Status)
+		}
+		return nil, errors.Errorf("unexpected status code %v: %s - Server message: %s", req.String(), resp.Status, registryErr.Error())
+	}
+	if offset > 0 {
+		cr := resp.Header.Get("content-range")
+		if cr != "" {
+			if !strings.HasPrefix(cr, fmt.Sprintf("bytes %d-", offset)) {
+				return nil, errors.Errorf("unhandled content range in response: %v", cr)
+
+			}
+		} else {
+			// TODO: Should any cases where use of content range
+			// without the proper header be considered?
+			// 206 responses?
+
+			// Discard up to offset
+			// Could use buffer pool here but this case should be rare
+			n, err := io.Copy(ioutil.Discard, io.LimitReader(resp.Body, offset))
+			if err != nil {
+				return nil, errors.Wrap(err, "failed to discard to offset")
+			}
+			if n != offset {
+				return nil, errors.Errorf("unable to discard to offset")
+			}
+
+		}
+	}
+
+	return resp.Body, nil
 }
 ```
