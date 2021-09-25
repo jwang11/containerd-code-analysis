@@ -578,7 +578,7 @@ func Fetch(ctx context.Context, client *containerd.Client, ref string, config *F
 // and returns a non-platform specific image reference
 func (c *Client) Fetch(ctx context.Context, ref string, opts ...RemoteOpt) (images.Image, error) {
 
-+	fetchCtx := defaultRemoteContext()
+	fetchCtx := defaultRemoteContext()
 -	// 把RemoteOpt数组里的函数执行一遍，修改client，fetchCtx
 	for _, o := range opts {
 		if err := o(c, fetchCtx); err != nil {
@@ -620,15 +620,6 @@ func (c *Client) Fetch(ctx context.Context, ref string, opts ...RemoteOpt) (imag
 	}
 +	return c.createNewImage(ctx, img)
 }
-
-func defaultRemoteContext() *RemoteContext {
--	// 这个default的resolver后面会被RemoteOpt替换掉
-	return &RemoteContext{
-		Resolver: docker.NewResolver(docker.ResolverOptions{
-			Client: http.DefaultClient,
-		}),
-	}
-}
 ```
 
 - ***c.fetch(ctx, fetchCtx, ref, 0)***
@@ -658,16 +649,6 @@ type Descriptor struct {
 	Platform *Platform `json:"platform,omitempty"`
 }
 
-func (r *dockerResolver) Fetcher(ctx context.Context, ref string) (remotes.Fetcher, error) {
-	base, err := r.resolveDockerBase(ref)
-	if err != nil {
-		return nil, err
-	}
-
-	return dockerFetcher{
-		dockerBase: base,
-	}, nil
-}
 
 func (c *Client) fetch(ctx context.Context, rCtx *RemoteContext, ref string, limit int) (images.Image, error) {
 	store := c.ContentStore()
@@ -773,6 +754,17 @@ func (c *Client) fetch(ctx context.Context, rCtx *RemoteContext, ref string, lim
 		Name:   name,
 		Target: desc,
 		Labels: rCtx.Labels,
+	}, nil
+}
+
+func (r *dockerResolver) Fetcher(ctx context.Context, ref string) (remotes.Fetcher, error) {
+	base, err := r.resolveDockerBase(ref)
+	if err != nil {
+		return nil, err
+	}
+
+	return dockerFetcher{
+		dockerBase: base,
 	}, nil
 }
 ```
@@ -1060,8 +1052,9 @@ func (r *dockerBase) request(host RegistryHost, method string, ps ...string) *re
 	for key, value := range host.Header {
 		header[key] = append(header[key], value...)
 	}
--	// parts=/v2/library/nginx/manifests/latest@digest
+
 	parts := append([]string{"/", host.Path, r.repository}, ps...)
+-	// p =/v2/library/nginx/manifests/latest@digest	
 	p := path.Join(parts...)
 	// Join strips trailing slash, re-add ending "/" if included
 	if len(parts) > 0 && strings.HasSuffix(parts[len(parts)-1], "/") {
@@ -1075,10 +1068,6 @@ func (r *dockerBase) request(host RegistryHost, method string, ps ...string) *re
 	}
 }
 
-```
-
->>> Reference Spec
-```
 // Spec defines the main components of a reference specification.
 //
 // A reference specification is a schema-less URI parsed into common
@@ -1123,61 +1112,11 @@ type Spec struct {
 	// algorithm.
 	Object string
 }
-
-var splitRe = regexp.MustCompile(`[:@]`)
-
-// Parse parses the string into a structured ref.
-func Parse(s string) (Spec, error) {
-	if strings.Contains(s, "://") {
-		return Spec{}, ErrInvalid
-	}
-
-	u, err := url.Parse("dummy://" + s)
-	if err != nil {
-		return Spec{}, err
-	}
-
-	if u.Scheme != "dummy" {
-		return Spec{}, ErrInvalid
-	}
-
-	if u.Host == "" {
-		return Spec{}, ErrHostnameRequired
-	}
-
-	var object string
-
-	if idx := splitRe.FindStringIndex(u.Path); idx != nil {
-		// This allows us to retain the @ to signify digests or shortened digests in
-		// the object.
-		object = u.Path[idx[0]:]
-		if object[:1] == ":" {
-			object = object[1:]
-		}
-		u.Path = u.Path[:idx[0]]
-	}
-
-	return Spec{
-		Locator: path.Join(u.Host, u.Path),
-		Object:  object,
-	}, nil
-}
-
-// Hostname returns the hostname portion of the locator.
-//
-// Remotes are not required to directly access the resources at this host. This
-// method is provided for convenience.
-func (r Spec) Hostname() string {
-	i := strings.Index(r.Locator, "/")
-
-	if i < 0 {
-		return r.Locator
-	}
-	return r.Locator[:i]
-}
 ```
 
-- ***FetchHandler是负责fetch所有的content，放进content store***
+- 分析handlers中重要的***FetchHandler是负责fetch所有的content，放进content store***
+Dispatch里会调用handler.handle()，实际是执行一系列的handlers，其中最重要的一个就是FetchHandler
+
 ```diff
 // FetchHandler returns a handler that will fetch all content into the ingester
 // discovered in a call to Dispatch. Use with ChildrenHandler to do a full
@@ -1194,7 +1133,7 @@ func FetchHandler(ingester content.Ingester, fetcher Fetcher) images.HandlerFunc
 		case images.MediaTypeDockerSchema1Manifest:
 			return nil, fmt.Errorf("%v not supported", desc.MediaType)
 		default:
-			err := fetch(ctx, ingester, fetcher, desc)
++			err := fetch(ctx, ingester, fetcher, desc)
 			return nil, err
 		}
 	}
