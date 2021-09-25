@@ -622,6 +622,7 @@ func (c *Client) Fetch(ctx context.Context, ref string, opts ...RemoteOpt) (imag
 }
 
 func defaultRemoteContext() *RemoteContext {
+-	// 这个default的resolver后面会被RemoteOpt替换掉
 	return &RemoteContext{
 		Resolver: docker.NewResolver(docker.ResolverOptions{
 			Client: http.DefaultClient,
