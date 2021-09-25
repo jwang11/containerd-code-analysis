@@ -1114,7 +1114,7 @@ type Spec struct {
 }
 ```
 
-- 分析handlers中重要的***FetchHandler是负责fetch所有的content，放进content store***
+- 分析handlers中重要的***FetchHandler是负责fetch所有的content，放进content store*** <br>
 Dispatch里会调用handler.handle()，实际是执行一系列的handlers，其中最重要的一个就是FetchHandler
 
 ```diff
