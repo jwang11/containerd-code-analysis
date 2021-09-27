@@ -710,7 +710,7 @@ func (c *Client) fetch(ctx context.Context, rCtx *RemoteContext, ref string, lim
 				return []ocispec.Descriptor{}, nil
 			},
 		)
-
+-		// 给descriptor代表的content打上源标签containerd.io/distribution.source.docker.io=library/nginx
 		appendDistSrcLabelHandler, err := docker.AppendDistributionSourceLabel(store, ref)
 		if err != nil {
 			return images.Image{}, err
@@ -990,7 +990,6 @@ func (r *dockerResolver) Resolve(ctx context.Context, ref string) (string, ocisp
 				continue
 			}
 
--			// 返回构造的根descriptor
 			desc := ocispec.Descriptor{
 				Digest:    dgst,
 				MediaType: contentType,
