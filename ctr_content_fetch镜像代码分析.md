@@ -653,7 +653,7 @@ type Descriptor struct {
 func (c *Client) fetch(ctx context.Context, rCtx *RemoteContext, ref string, limit int) (images.Image, error) {
 	store := c.ContentStore()
 -	// 用resovler得到image ref的descriptor
-	name, desc, err := rCtx.Resolver.Resolve(ctx, ref)
++	name, desc, err := rCtx.Resolver.Resolve(ctx, ref)
 	if err != nil {
 		return images.Image{}, errors.Wrapf(err, "failed to resolve reference %q", ref)
 	}
@@ -809,7 +809,7 @@ func Dispatch(ctx context.Context, handler Handler, limiter *semaphore.Weighted,
 }
 ```
 
->> ***Resolver.Resolve***
+>> ***c.fetch(ctx, fetchCtx, ref, 0) -> rCtx.Resolver.Resolve(ctx, ref)***
 >> 
 ```diff
 // RegistryHost represents a complete configuration for a registry
@@ -876,6 +876,7 @@ func (r *dockerResolver) Resolve(ctx context.Context, ref string) (string, ocisp
 		return "", ocispec.Descriptor{}, err
 	}
 
+-	// 用host + path搭配遍历，直到resovle成功，返回descriptor
 	for _, u := range paths {
 		for _, host := range hosts {
 			ctx := log.WithLogger(ctx, log.G(ctx).WithField("host", host.Host))
