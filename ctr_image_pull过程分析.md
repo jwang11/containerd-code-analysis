@@ -123,12 +123,12 @@ command. As part of this process, we do the following:
 			return err
 		}
 
--   // 前面就是执行$ctr content fetch命令，区别从这里开始
+-   		// 前面就是执行$ctr content fetch命令，区别从这里开始
 		log.G(ctx).WithField("image", ref).Debug("unpacking")
 
 		// TODO: Show unpack status
 
--   // 根据image.Target和命令行参数收集需要unpack的platform
+-   		// 根据image.Target和命令行参数收集需要unpack的platform
 		var p []ocispec.Platform
 		if context.Bool("all-platforms") {
 			p, err = images.Platforms(ctx, client.ContentStore(), img.Target)
@@ -151,10 +151,10 @@ command. As part of this process, we do the following:
 		start := time.Now()
 		for _, platform := range p {
 			fmt.Printf("unpacking %s %s...\n", platforms.Format(platform), img.Target.Digest)
--     // 生成一个client image      
-+			i := containerd.NewImageWithPlatform(client, img, platforms.Only(platform))
+-     			// 生成一个client image      
+			i := containerd.NewImageWithPlatform(client, img, platforms.Only(platform))
 -     			// 把image unpack到snapshotter
-+      			err = i.Unpack(ctx, context.String("snapshotter"))
+      			err = i.Unpack(ctx, context.String("snapshotter"))
 			if err != nil {
 				return err
 			}
