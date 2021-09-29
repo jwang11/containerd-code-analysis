@@ -281,9 +281,9 @@ func NewContainer(ctx gocontext.Context, client *containerd.Client, context *cli
 	}
 
 	var (
--		// 构建Spec的闭包数组		
+-		// 配置Spec的闭包数组		
 		opts  []oci.SpecOpts
--		// 构建Container属性的闭包数组		
+-		// 配置Container的闭包数组		
 		cOpts []containerd.NewContainerOpts
 		spec  containerd.NewContainerOpts
 	)
@@ -768,6 +768,7 @@ func WithImageConfig(image Image) SpecOpts {
 // replaces the CMD of the image
 func WithImageConfigArgs(image Image, args []string) SpecOpts {
 	return func(ctx context.Context, client Client, c *containers.Container, s *Spec) error {
+-		// 获取image的config
 		ic, err := image.Config(ctx)
 		if err != nil {
 			return err
