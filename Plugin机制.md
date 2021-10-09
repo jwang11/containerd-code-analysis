@@ -500,6 +500,7 @@ func New(ctx context.Context, config *srvconfig.Config) (*Server, error) {
 // of all plugins.
 func LoadPlugins(ctx context.Context, config *srvconfig.Config) ([]*plugin.Registration, error) {
 ...
+-	// 注册ContentPlugin
 	// load additional plugins that don't automatically register themselves
 	plugin.Register(&plugin.Registration{
 		Type: plugin.ContentPlugin,
