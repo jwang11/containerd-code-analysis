@@ -2,8 +2,8 @@
 > Image服务提供镜像的list，create，update，delete等操作，但不负责pull和push。<br>
 > image的信息记录在metedata的bolt库里。
 
-### 外部服务GPRCPlugin的注册
-- 依赖ServicePlugin中的services.ImagesService<br>
+## 1. 外部服务
+### 1.1 Plugin注册
 [services/images/service.go](https://github.com/containerd/containerd/blob/main/services/images/service.go)
 ```diff
 func init() {
@@ -31,7 +31,7 @@ func init() {
 	})
 }
 ```
-- ***外部服务实现***
+### 1.2 接口实现
 ```diff
 type service struct {
 	local imagesapi.ImagesClient
@@ -65,7 +65,8 @@ func (s *service) Delete(ctx context.Context, req *imagesapi.DeleteImageRequest)
 }
 ```
 
-### 内部服务ServicePlugin的注册
+## 2. 内部服务
+### 2.1 Plugin注册
 - 依赖两个底层服务MetadataPlugin和GCPlugin
 ```diff
 func init() {
@@ -86,9 +87,9 @@ func init() {
 				return nil, err
 			}
 
-			return &local{
++			return &local{
 +				store:     metadata.NewImageStore(m.(*metadata.DB)),
-				publisher: ic.Events,
++				publisher: ic.Events,
 				gc:        g.(gcScheduler),
 			}, nil
 		},
@@ -96,7 +97,7 @@ func init() {
 }
 ```
 
-### 内部服务ServicePlugin的实现
+### 2.2 接口实现
 ```diff
 type local struct {
 	store     images.Store
@@ -108,9 +109,6 @@ var _ imagesapi.ImagesClient = &local{}
 
 func (l *local) Get(ctx context.Context, req *imagesapi.GetImageRequest, _ ...grpc.CallOption) (*imagesapi.GetImageResponse, error) {
 +	image, err := l.store.Get(ctx, req.Name)
-	if err != nil {
-		return nil, errdefs.ToGRPC(err)
-	}
 
 	imagepb := imageToProto(&image)
 	return &imagesapi.GetImageResponse{
@@ -120,9 +118,6 @@ func (l *local) Get(ctx context.Context, req *imagesapi.GetImageRequest, _ ...gr
 
 func (l *local) List(ctx context.Context, req *imagesapi.ListImagesRequest, _ ...grpc.CallOption) (*imagesapi.ListImagesResponse, error) {
 +	images, err := l.store.List(ctx, req.Filters...)
-	if err != nil {
-		return nil, errdefs.ToGRPC(err)
-	}
 
 	return &imagesapi.ListImagesResponse{
 		Images: imagesToProto(images),
@@ -131,18 +126,12 @@ func (l *local) List(ctx context.Context, req *imagesapi.ListImagesRequest, _ ..
 
 func (l *local) Create(ctx context.Context, req *imagesapi.CreateImageRequest, _ ...grpc.CallOption) (*imagesapi.CreateImageResponse, error) {
 	log.G(ctx).WithField("name", req.Image.Name).WithField("target", req.Image.Target.Digest).Debugf("create image")
-	if req.Image.Name == "" {
-		return nil, status.Errorf(codes.InvalidArgument, "Image.Name required")
-	}
 
 	var (
 		image = imageFromProto(&req.Image)
 		resp  imagesapi.CreateImageResponse
 	)
 +	created, err := l.store.Create(ctx, image)
-	if err != nil {
-		return nil, errdefs.ToGRPC(err)
-	}
 
 	resp.Image = imageToProto(&created)
 
@@ -154,14 +143,9 @@ func (l *local) Create(ctx context.Context, req *imagesapi.CreateImageRequest, _
 	}
 
 	return &resp, nil
-
 }
 
 func (l *local) Update(ctx context.Context, req *imagesapi.UpdateImageRequest, _ ...grpc.CallOption) (*imagesapi.UpdateImageResponse, error) {
-	if req.Image.Name == "" {
-		return nil, status.Errorf(codes.InvalidArgument, "Image.Name required")
-	}
-
 	var (
 		image      = imageFromProto(&req.Image)
 		resp       imagesapi.UpdateImageResponse
@@ -173,18 +157,13 @@ func (l *local) Update(ctx context.Context, req *imagesapi.UpdateImageRequest, _
 	}
 
 	updated, err := l.store.Update(ctx, image, fieldpaths...)
-	if err != nil {
-		return nil, errdefs.ToGRPC(err)
-	}
 
 	resp.Image = imageToProto(&updated)
 
 	if err := l.publisher.Publish(ctx, "/images/update", &eventstypes.ImageUpdate{
 		Name:   resp.Image.Name,
 		Labels: resp.Image.Labels,
-	}); err != nil {
-		return nil, err
-	}
+	});
 
 	return &resp, nil
 }
@@ -192,15 +171,11 @@ func (l *local) Update(ctx context.Context, req *imagesapi.UpdateImageRequest, _
 func (l *local) Delete(ctx context.Context, req *imagesapi.DeleteImageRequest, _ ...grpc.CallOption) (*ptypes.Empty, error) {
 	log.G(ctx).WithField("name", req.Name).Debugf("delete image")
 
-+	if err := l.store.Delete(ctx, req.Name); err != nil {
-		return nil, errdefs.ToGRPC(err)
-	}
++	if err := l.store.Delete(ctx, req.Name); err != nil {}
 
 	if err := l.publisher.Publish(ctx, "/images/delete", &eventstypes.ImageDelete{
 		Name: req.Name,
-	}); err != nil {
-		return nil, err
-	}
+	});
 
 	if req.Sync {
 		if _, err := l.gc.ScheduleAndWait(ctx); err != nil {
