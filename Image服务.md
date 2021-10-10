@@ -264,7 +264,7 @@ func (s *imageStore) Get(ctx context.Context, name string) (images.Image, error)
 	return image, nil
 }
 ```
->> ***Get -> readImage***
+> Get -> readImage
 ```
 func readImage(image *images.Image, bkt *bolt.Bucket) error {
 	if err := boltutil.ReadTimestamps(bkt, &image.CreatedAt, &image.UpdatedAt); err != nil {
@@ -345,7 +345,7 @@ func (s *imageStore) Create(ctx context.Context, image images.Image) (images.Ima
 	return image, nil
 }
 ```
-> ***Create -> writeImage***
+> Create -> writeImage
 ```diff
 func writeImage(bkt *bolt.Bucket, image *images.Image) error {
 	if err := boltutil.WriteTimestamps(bkt, image.CreatedAt, image.UpdatedAt); err != nil {}
