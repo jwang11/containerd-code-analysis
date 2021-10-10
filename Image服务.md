@@ -101,7 +101,6 @@ var _ imagesapi.ImagesClient = &local{}
 
 func (l *local) Get(ctx context.Context, req *imagesapi.GetImageRequest, _ ...grpc.CallOption) (*imagesapi.GetImageResponse, error) {
 +	image, err := l.store.Get(ctx, req.Name)
-
 	imagepb := imageToProto(&image)
 	return &imagesapi.GetImageResponse{
 		Image: &imagepb,
@@ -110,7 +109,6 @@ func (l *local) Get(ctx context.Context, req *imagesapi.GetImageRequest, _ ...gr
 
 func (l *local) List(ctx context.Context, req *imagesapi.ListImagesRequest, _ ...grpc.CallOption) (*imagesapi.ListImagesResponse, error) {
 +	images, err := l.store.List(ctx, req.Filters...)
-
 	return &imagesapi.ListImagesResponse{
 		Images: imagesToProto(images),
 	}, nil
@@ -124,14 +122,11 @@ func (l *local) Create(ctx context.Context, req *imagesapi.CreateImageRequest, _
 		resp  imagesapi.CreateImageResponse
 	)
 +	created, err := l.store.Create(ctx, image)
-
 	resp.Image = imageToProto(&created)
-
 	if err := l.publisher.Publish(ctx, "/images/create", &eventstypes.ImageCreate{
 		Name:   resp.Image.Name,
 		Labels: resp.Image.Labels,
 	})
-
 	return &resp, nil
 }
 
@@ -147,9 +142,7 @@ func (l *local) Update(ctx context.Context, req *imagesapi.UpdateImageRequest, _
 	}
 
 	updated, err := l.store.Update(ctx, image, fieldpaths...)
-
 	resp.Image = imageToProto(&updated)
-
 	if err := l.publisher.Publish(ctx, "/images/update", &eventstypes.ImageUpdate{
 		Name:   resp.Image.Name,
 		Labels: resp.Image.Labels,
@@ -216,6 +209,21 @@ func NewImageStore(db *DB) images.Store {
 ```
 
 ### 3.2 接口实现
+```diff
+- bolt数据库里的image
+//  └──v1                                        - Schema version bucket
+//     ╘══*namespace*
+//        ├──image
+//        │  ╘══*image name*
+//        │     ├──createdat : <binary time>     - Created at
+//        │     ├──updatedat : <binary time>     - Updated at
+//        │     ├──target
+//        │     │  ├──digest : <digest>          - Descriptor digest
+//        │     │  ├──mediatype : <string>       - Descriptor media type
+//        │     │  └──size : <varint>            - Descriptor size
+//        │     └──labels
+//        │        ╘══*key* : <string>           - Label value
+```
 - ***Get***
 ```
 func (s *imageStore) Get(ctx context.Context, name string) (images.Image, error) {
@@ -236,14 +244,7 @@ func (s *imageStore) Get(ctx context.Context, name string) (images.Image, error)
 				if hasSharedLabel(tx, string(k)) {
 					// and has the image we are looking for
 					bkt = getImagesBucket(tx, string(k))
-					if bkt == nil {
-						continue
-					}
-
 					ibkt := bkt.Bucket([]byte(name))
-					if ibkt == nil {
-						continue
-					}
 					// we are done
 					break
 				}
@@ -252,30 +253,21 @@ func (s *imageStore) Get(ctx context.Context, name string) (images.Image, error)
 		}
 
 		ibkt := bkt.Bucket([]byte(name))
-
 		image.Name = name
-+		if err := readImage(&image, ibkt); err != nil {
-			return errors.Wrapf(err, "image %q", name)
-		}
-
++		if err := readImage(&image, ibkt); err != nil {}
 		return nil
 	})
-
 	return image, nil
 }
 ```
 > Get -> readImage
 ```
 func readImage(image *images.Image, bkt *bolt.Bucket) error {
-	if err := boltutil.ReadTimestamps(bkt, &image.CreatedAt, &image.UpdatedAt); err != nil {
-		return err
-	}
+	if err := boltutil.ReadTimestamps(bkt, &image.CreatedAt, &image.UpdatedAt); err != nil {}
 
 	labels, err := boltutil.ReadLabels(bkt)
 	image.Labels = labels
-
 	image.Target.Annotations, err = boltutil.ReadAnnotations(bkt)
-
 	tbkt := bkt.Bucket(bucketKeyTarget)
 
 	return tbkt.ForEach(func(k, v []byte) error {
@@ -361,8 +353,6 @@ func writeImage(bkt *bolt.Bucket, image *images.Image) error {
 		{bucketKeyDigest, []byte(image.Target.Digest)},
 		{bucketKeyMediaType, []byte(image.Target.MediaType)},
 		{bucketKeySize, sizeEncoded},
-	} {
-		if err := tbkt.Put(v[0], v[1]); err != nil {}
 	}
 
 	return nil
@@ -439,11 +429,8 @@ func (s *imageStore) Delete(ctx context.Context, name string, opts ...images.Del
 	namespace, err := namespaces.NamespaceRequired(ctx)
 	return update(ctx, s.db, func(tx *bolt.Tx) error {
 		bkt := getImagesBucket(tx, namespace)
-
 		if err = bkt.DeleteBucket([]byte(name)); err != nil {}
-
 		atomic.AddUint32(&s.db.dirty, 1)
-
 		return nil
 	})
 }
