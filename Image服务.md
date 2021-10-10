@@ -175,7 +175,9 @@ func (l *local) Delete(ctx context.Context, req *imagesapi.DeleteImageRequest, _
 }
 ```
 
-## 底层实现
+## 3. 底层实现
+
+### 建立imageStore
 ```
 // Image provides the model for how containerd views container images.
 type Image struct {
@@ -213,6 +215,7 @@ func NewImageStore(db *DB) images.Store {
 }
 ```
 
+### 3.2 接口实现
 - ***Get***
 ```
 func (s *imageStore) Get(ctx context.Context, name string) (images.Image, error) {
