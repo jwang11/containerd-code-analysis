@@ -22,8 +22,9 @@ OPTIONS:
    --help, -h  show help
 ```
 
-### Container外部服务注册
+## 1. 外部服务
 [services/containers/service.go](https://github.com/containerd/containerd/blob/main/services/containers/service.go)
+### 1.1 Plugin注册
 ```diff
 func init() {
 	plugin.Register(&plugin.Registration{
@@ -52,7 +53,7 @@ func init() {
 }
 ```
 
-### 外部服务实现
+## 1.2 接口实现
 ```diff
 type service struct {
 	local api.ContainersClient
@@ -110,7 +111,8 @@ func (s *service) Delete(ctx context.Context, req *api.DeleteContainerRequest) (
 }
 ```
 
-### Container内部服务注册
+## 2. 内部服务
+### 2.2 Plugin注册
 ```diff
 func init() {
 	plugin.Register(&plugin.Registration{
@@ -150,16 +152,13 @@ type local struct {
 }
 ```
 
-### Container内部服务实现
+### 2.2 接口实现
 ```diff
 func (l *local) Get(ctx context.Context, req *api.GetContainerRequest, _ ...grpc.CallOption) (*api.GetContainerResponse, error) {
 	var resp api.GetContainerResponse
 
 	return &resp, errdefs.ToGRPC(l.withStoreView(ctx, func(ctx context.Context) error {
 		container, err := l.Store.Get(ctx, req.ID)
-		if err != nil {
-			return err
-		}
 		containerpb := containerToProto(&container)
 		resp.Container = containerpb
 
@@ -171,9 +170,6 @@ func (l *local) List(ctx context.Context, req *api.ListContainersRequest, _ ...g
 	var resp api.ListContainersResponse
 	return &resp, errdefs.ToGRPC(l.withStoreView(ctx, func(ctx context.Context) error {
 		containers, err := l.Store.List(ctx, req.Filters...)
-		if err != nil {
-			return err
-		}
 		resp.Containers = containersToProto(containers)
 		return nil
 	}))
@@ -185,9 +181,6 @@ func (l *local) ListStream(ctx context.Context, req *api.ListContainersRequest, 
 	}
 	return stream, errdefs.ToGRPC(l.withStoreView(ctx, func(ctx context.Context) error {
 		containers, err := l.Store.List(ctx, req.Filters...)
-		if err != nil {
-			return err
-		}
 		stream.containers = containersToProto(containers)
 		return nil
 	}))
@@ -198,18 +191,13 @@ func (l *local) Create(ctx context.Context, req *api.CreateContainerRequest, _ .
 
 	if err := l.withStoreUpdate(ctx, func(ctx context.Context) error {
 		container := containerFromProto(&req.Container)
-
 		created, err := l.Store.Create(ctx, container)
-		if err != nil {
-			return err
-		}
 
 		resp.Container = containerToProto(&created)
 
 		return nil
-	}); err != nil {
-		return &resp, errdefs.ToGRPC(err)
-	}
+	})
+	
 	if err := l.publisher.Publish(ctx, "/containers/create", &eventstypes.ContainerCreate{
 		ID:    resp.Container.ID,
 		Image: resp.Container.Image,
@@ -217,17 +205,12 @@ func (l *local) Create(ctx context.Context, req *api.CreateContainerRequest, _ .
 			Name:    resp.Container.Runtime.Name,
 			Options: resp.Container.Runtime.Options,
 		},
-	}); err != nil {
-		return &resp, err
-	}
+	})
 
 	return &resp, nil
 }
 
 func (l *local) Update(ctx context.Context, req *api.UpdateContainerRequest, _ ...grpc.CallOption) (*api.UpdateContainerResponse, error) {
-	if req.Container.ID == "" {
-		return nil, status.Errorf(codes.InvalidArgument, "Container.ID required")
-	}
 	var (
 		resp      api.UpdateContainerResponse
 		container = containerFromProto(&req.Container)
@@ -240,24 +223,17 @@ func (l *local) Update(ctx context.Context, req *api.UpdateContainerRequest, _ .
 		}
 
 		updated, err := l.Store.Update(ctx, container, fieldpaths...)
-		if err != nil {
-			return err
-		}
 
 		resp.Container = containerToProto(&updated)
 		return nil
-	}); err != nil {
-		return &resp, errdefs.ToGRPC(err)
-	}
+	})
 
 	if err := l.publisher.Publish(ctx, "/containers/update", &eventstypes.ContainerUpdate{
 		ID:          resp.Container.ID,
 		Image:       resp.Container.Image,
 		Labels:      resp.Container.Labels,
 		SnapshotKey: resp.Container.SnapshotKey,
-	}); err != nil {
-		return &resp, err
-	}
+	})
 
 	return &resp, nil
 }
@@ -265,15 +241,11 @@ func (l *local) Update(ctx context.Context, req *api.UpdateContainerRequest, _ .
 func (l *local) Delete(ctx context.Context, req *api.DeleteContainerRequest, _ ...grpc.CallOption) (*ptypes.Empty, error) {
 	if err := l.withStoreUpdate(ctx, func(ctx context.Context) error {
 		return l.Store.Delete(ctx, req.ID)
-	}); err != nil {
-		return &ptypes.Empty{}, errdefs.ToGRPC(err)
-	}
+	})
 
 	if err := l.publisher.Publish(ctx, "/containers/delete", &eventstypes.ContainerDelete{
 		ID: req.ID,
-	}); err != nil {
-		return &ptypes.Empty{}, err
-	}
+	})
 
 	return &ptypes.Empty{}, nil
 }
@@ -291,12 +263,11 @@ func (l *local) withStoreView(ctx context.Context, fn func(ctx context.Context) 
 func (l *local) withStoreUpdate(ctx context.Context, fn func(ctx context.Context) error) error {
 	return l.db.Update(l.withStore(ctx, fn))
 }
-
-
 ```
 
-### Container底层服务
-- metadta.NewContainerStore
+##  3. 底层服务
+
+### 3.1 建立ContainerStore
 ```diff
 // NewContainerStore returns a Store backed by an underlying bolt DB
 func NewContainerStore(db *DB) containers.Store {
@@ -305,62 +276,58 @@ func NewContainerStore(db *DB) containers.Store {
 		db: db,
 	}
 }
+```
+
+### 3.2 接口实现
+```diff
+-  bolt数据库里的Container
+//  └──v1                                        - Schema version bucket
+//     ╘══*namespace*
+//        ├──containers
+//        │  ╘══*container id*
+//        │     ├──createdat : <binary time>     - Created at
+//        │     ├──updatedat : <binary time>     - Updated at
+//        │     ├──spec : <binary>               - Proto marshaled spec
+//        │     ├──image : <string>              - Image name
+//        │     ├──snapshotter : <string>        - Snapshotter name
+//        │     ├──snapshotKey : <string>        - Snapshot key
+//        │     ├──runtime
+//        │     │  ├──name : <string>            - Runtime name
+//        │     │  ├──extensions
+//        │     │  │  ╘══*name* : <binary>       - Proto marshaled extension
+//        │     │  └──options : <binary>         - Proto marshaled options
+//        │     └──labels
+//        │        ╘══*key* : <string>           - Label value
+```
+- ***Get***
+```diff
 func (s *containerStore) Get(ctx context.Context, id string) (containers.Container, error) {
 	namespace, err := namespaces.NamespaceRequired(ctx)
-	if err != nil {
-		return containers.Container{}, err
-	}
-
 	container := containers.Container{ID: id}
 
 	if err := view(ctx, s.db, func(tx *bolt.Tx) error {
 		bkt := getContainerBucket(tx, namespace, id)
-		if bkt == nil {
-			return errors.Wrapf(errdefs.ErrNotFound, "container %q in namespace %q", id, namespace)
-		}
-
-		if err := readContainer(&container, bkt); err != nil {
-			return errors.Wrapf(err, "failed to read container %q", id)
-		}
-
+		if err := readContainer(&container, bkt); err != nil {}
 		return nil
-	}); err != nil {
-		return containers.Container{}, err
-	}
-
+	})
 	return container, nil
 }
+```
 
+- ***List***
+```diff
 func (s *containerStore) List(ctx context.Context, fs ...string) ([]containers.Container, error) {
 	namespace, err := namespaces.NamespaceRequired(ctx)
-	if err != nil {
-		return nil, err
-	}
-
 	filter, err := filters.ParseAll(fs...)
-	if err != nil {
-		return nil, errors.Wrap(errdefs.ErrInvalidArgument, err.Error())
-	}
-
 	var m []containers.Container
 
 	if err := view(ctx, s.db, func(tx *bolt.Tx) error {
 		bkt := getContainersBucket(tx, namespace)
-		if bkt == nil {
-			return nil // empty store
-		}
 
 		return bkt.ForEach(func(k, v []byte) error {
 			cbkt := bkt.Bucket(k)
-			if cbkt == nil {
-				return nil
-			}
 			container := containers.Container{ID: string(k)}
-
-			if err := readContainer(&container, cbkt); err != nil {
-				return errors.Wrapf(err, "failed to read container %q", string(k))
-			}
-
++			if err := readContainer(&container, cbkt); err != nil {}
 			if filter.Match(adaptContainer(container)) {
 				m = append(m, container)
 			}
@@ -372,54 +339,31 @@ func (s *containerStore) List(ctx context.Context, fs ...string) ([]containers.C
 
 	return m, nil
 }
+```
 
+- ***Create***
+```diff
 func (s *containerStore) Create(ctx context.Context, container containers.Container) (containers.Container, error) {
 	namespace, err := namespaces.NamespaceRequired(ctx)
-	if err != nil {
-		return containers.Container{}, err
-	}
-
-	if err := validateContainer(&container); err != nil {
-		return containers.Container{}, errors.Wrap(err, "create container failed validation")
-	}
-
+	if err := validateContainer(&container); err != nil {}
 	if err := update(ctx, s.db, func(tx *bolt.Tx) error {
 		bkt, err := createContainersBucket(tx, namespace)
-		if err != nil {
-			return err
-		}
-
 		cbkt, err := bkt.CreateBucket([]byte(container.ID))
-		if err != nil {
-			if err == bolt.ErrBucketExists {
-				err = errors.Wrapf(errdefs.ErrAlreadyExists, "container %q", container.ID)
-			}
-			return err
-		}
 
 		container.CreatedAt = time.Now().UTC()
 		container.UpdatedAt = container.CreatedAt
-		if err := writeContainer(cbkt, &container); err != nil {
-			return errors.Wrapf(err, "failed to write container %q", container.ID)
-		}
++		if err := writeContainer(cbkt, &container); err != nil {}
 
 		return nil
-	}); err != nil {
-		return containers.Container{}, err
-	}
+	})
 
 	return container, nil
 }
-
+```
+- ***Update***
+```diff
 func (s *containerStore) Update(ctx context.Context, container containers.Container, fieldpaths ...string) (containers.Container, error) {
 	namespace, err := namespaces.NamespaceRequired(ctx)
-	if err != nil {
-		return containers.Container{}, err
-	}
-
-	if container.ID == "" {
-		return containers.Container{}, errors.Wrapf(errdefs.ErrInvalidArgument, "must specify a container id")
-	}
 
 	var updated containers.Container
 	if err := update(ctx, s.db, func(tx *bolt.Tx) error {
@@ -429,13 +373,8 @@ func (s *containerStore) Update(ctx context.Context, container containers.Contai
 		}
 
 		cbkt := bkt.Bucket([]byte(container.ID))
-		if cbkt == nil {
-			return errors.Wrapf(errdefs.ErrNotFound, "container %q", container.ID)
-		}
 
-		if err := readContainer(&updated, cbkt); err != nil {
-			return errors.Wrapf(err, "failed to read container %q", container.ID)
-		}
++		if err := readContainer(&updated, cbkt); err != nil {}
 		createdat := updated.CreatedAt
 		updated.ID = container.ID
 
@@ -446,13 +385,9 @@ func (s *containerStore) Update(ctx context.Context, container containers.Contai
 			// Fields that are immutable must cause an error when no field paths
 			// are provided. This allows these fields to become mutable in the
 			// future.
-			if updated.Snapshotter != container.Snapshotter {
-				return errors.Wrapf(errdefs.ErrInvalidArgument, "container.Snapshotter field is immutable")
-			}
+			if updated.Snapshotter != container.Snapshotter {}
 
-			if updated.Runtime.Name != container.Runtime.Name {
-				return errors.Wrapf(errdefs.ErrInvalidArgument, "container.Runtime.Name field is immutable")
-			}
+			if updated.Runtime.Name != container.Runtime.Name {}
 		}
 
 		// apply the field mask. If you update this code, you better follow the
@@ -493,45 +428,28 @@ func (s *containerStore) Update(ctx context.Context, container containers.Contai
 			}
 		}
 
-		if err := validateContainer(&updated); err != nil {
-			return errors.Wrap(err, "update failed validation")
-		}
+		if err := validateContainer(&updated); err != nil {}
 
 		updated.CreatedAt = createdat
 		updated.UpdatedAt = time.Now().UTC()
-		if err := writeContainer(cbkt, &updated); err != nil {
-			return errors.Wrapf(err, "failed to write container %q", container.ID)
-		}
-
++		if err := writeContainer(cbkt, &updated); err != nil {}
 		return nil
-	}); err != nil {
-		return containers.Container{}, err
-	}
-
+	})
 	return updated, nil
 }
+```
 
+- ***Delete***
+```diff
 func (s *containerStore) Delete(ctx context.Context, id string) error {
 	namespace, err := namespaces.NamespaceRequired(ctx)
-	if err != nil {
-		return err
-	}
-
 	return update(ctx, s.db, func(tx *bolt.Tx) error {
 		bkt := getContainersBucket(tx, namespace)
-		if bkt == nil {
-			return errors.Wrapf(errdefs.ErrNotFound, "cannot delete container %q in namespace %q", id, namespace)
-		}
-
 		if err := bkt.DeleteBucket([]byte(id)); err != nil {
-			if err == bolt.ErrBucketNotFound {
-				err = errors.Wrapf(errdefs.ErrNotFound, "container %v", id)
-			}
 			return err
 		}
 
 		atomic.AddUint32(&s.db.dirty, 1)
-
 		return nil
 	})
 }
