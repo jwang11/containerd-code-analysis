@@ -1,7 +1,7 @@
 # Containerd里的Plugin（插件）
 >containerd使用了Plugin注册机制，将task、content、snapshot、namespace、event、containers等服务以插件的方式注册然后提供服务。
 
-## Plugin的类型
+## 1. Plugin的类型
 - 目前共12种Plugin，
 ```
 const (
@@ -78,8 +78,8 @@ const (
 
 - plugin要通过注册初始化，才能在containerd里生效。
 
-## Plugin的注册
-- 注册plugin，必须先定义一个***Registeration***结构作为注册申请，并填好必需的信息。
+## 2. Plugin的注册
+- 2.1 注册plugin，必须先定义一个***Registeration***结构作为注册申请，并填好必需的信息。
 ```diff
 // Registration contains information for registering a plugin
 type Registration struct {
@@ -111,8 +111,8 @@ func (r *Registration) URI() string {
 }
 ```
 
-- 调用***plugin.Register***函数，把***Registration***结构作为该函数的参数。
-- 系统定义了一个全局变量***register***，所有注册的Registration都放在***register.Registration***数组里
+- 2.2 调用***plugin.Register***函数，把***Registration***结构作为该函数的参数。
+- 2.3 系统定义了一个全局变量***register***，所有注册的Registration都放在***register.Registration***数组里
 ```diff
 var register = struct {
 	sync.RWMutex
@@ -145,8 +145,8 @@ func Register(r *Registration) {
 
 ```
 
-## Plugin的初始化
-- Plugin的初始化入口是***Registration.Init***。初始化完成后，生成***Plugin***结构作为返回结果。
+## 3. Plugin的初始化
+### 3.1 Plugin的初始化入口是***Registration.Init***。初始化完成后，生成***Plugin***结构作为返回结果。
 - ***InitFn***是由plugin提供的初始化函数，它会在***Registration.Init***里被调用，返回结果（通常是service）存入***Registration.instance***。
 ```diff
 // Init the registered plugin
@@ -162,7 +162,7 @@ func (r *Registration) Init(ic *InitContext) *Plugin {
 }
 ```
 
-### Plugin结构和Plugin Set
+### 3.2 Plugin结构和Plugin Set
 - Plugin初始化后生成***Plugin***结构实例
 ```diff
 // Plugin represents an initialized plugin, used with an init context.
@@ -233,7 +233,7 @@ func (ps *Set) Get(t Type) (interface{}, error) {
 }
 ```
 
-### InitContext初始化上下文
+### 3.2 InitContext初始化上下文
 - ***InitContext***是Init函数的入口参数，提供plugin初始化需要的上下文信息
 ```diff
 // InitContext is used for plugin inititalization
@@ -316,8 +316,8 @@ func NewContext(ctx context.Context, r *Registration, plugins *Set, root, state 
 }
 ```
 
-## Plugin完整的注册和初始化过程
-- Plugin注册和初始化入口是在[Server.New](https://github.com/containerd/containerd/blob/main/services/server/server.go)
+## 4. Plugin完整的注册和初始化过程
+### 4.1 Plugin注册和初始化入口是在[Server.New](https://github.com/containerd/containerd/blob/main/services/server/server.go)
 ```diff
 // New creates and initializes a new containerd server
 func New(ctx context.Context, config *srvconfig.Config) (*Server, error) {
@@ -326,16 +326,12 @@ func New(ctx context.Context, config *srvconfig.Config) (*Server, error) {
 	}
 	for key, sec := range config.Timeouts {
 		d, err := time.ParseDuration(sec)
-		if err != nil {
-			return nil, errors.Errorf("unable to parse %s into a time duration", sec)
-		}
+
 		timeout.Set(key, d)
 	}
 -	// 注册plugin
-	plugins, err := LoadPlugins(ctx, config)
-	if err != nil {
-		return nil, err
-	}
++	plugins, err := LoadPlugins(ctx, config)
+
 	for id, p := range config.StreamProcessors {
 		diff.RegisterProcessor(diff.BinaryHandler(id, p.Returns, p.Accepts, p.Path, p.Args, p.Env))
 	}
@@ -357,25 +353,19 @@ func New(ctx context.Context, config *srvconfig.Config) (*Server, error) {
 		serverOpts = append(serverOpts, grpc.MaxSendMsgSize(config.GRPC.MaxSendMsgSize))
 	}
 	ttrpcServer, err := newTTRPCServer()
-	if err != nil {
-		return nil, err
-	}
+
 	tcpServerOpts := serverOpts
 	if config.GRPC.TCPTLSCert != "" {
 		log.G(ctx).Info("setting up tls on tcp GRPC services...")
 
 		tlsCert, err := tls.LoadX509KeyPair(config.GRPC.TCPTLSCert, config.GRPC.TCPTLSKey)
-		if err != nil {
-			return nil, err
-		}
+
 		tlsConfig := &tls.Config{Certificates: []tls.Certificate{tlsCert}}
 
 		if config.GRPC.TCPTLSCA != "" {
 			caCertPool := x509.NewCertPool()
 			caCert, err := ioutil.ReadFile(config.GRPC.TCPTLSCA)
-			if err != nil {
-				return nil, errors.Wrap(err, "failed to load CA file")
-			}
+
 			caCertPool.AppendCertsFromPEM(caCert)
 			tlsConfig.ClientCAs = caCertPool
 			tlsConfig.ClientAuth = tls.RequireAndVerifyClientCert
@@ -383,118 +373,10 @@ func New(ctx context.Context, config *srvconfig.Config) (*Server, error) {
 
 		tcpServerOpts = append(tcpServerOpts, grpc.Creds(credentials.NewTLS(tlsConfig)))
 	}
-	var (
-		grpcServer = grpc.NewServer(serverOpts...)
-		tcpServer  = grpc.NewServer(tcpServerOpts...)
-
-		grpcServices  []plugin.Service
-		tcpServices   []plugin.TCPService
-		ttrpcServices []plugin.TTRPCService
-
-		s = &Server{
-			grpcServer:  grpcServer,
-			tcpServer:   tcpServer,
-			ttrpcServer: ttrpcServer,
-			config:      config,
-		}
-		// TODO: Remove this in 2.0 and let event plugin crease it
-		events      = exchange.NewExchange()
-		initialized = plugin.NewPluginSet()
-		required    = make(map[string]struct{})
-	)
-	for _, r := range config.RequiredPlugins {
-		required[r] = struct{}{}
-	}
-
--	// 初始化plugin
-	for _, p := range plugins {
-		id := p.URI()
-		reqID := id
-		if config.GetVersion() == 1 {
-			reqID = p.ID
-		}
-		log.G(ctx).WithField("type", p.Type).Infof("loading plugin %q...", id)
-
-		initContext := plugin.NewContext(
-			ctx,
-			p,
-			initialized,
-			config.Root,
-			config.State,
-		)
-		initContext.Events = events
-		initContext.Address = config.GRPC.Address
-		initContext.TTRPCAddress = config.TTRPC.Address
-
-		// load the plugin specific configuration if it is provided
-		if p.Config != nil {
-			pc, err := config.Decode(p)
-			if err != nil {
-				return nil, err
-			}
-			initContext.Config = pc
-		}
-		result := p.Init(initContext)
-		if err := initialized.Add(result); err != nil {
-			return nil, errors.Wrapf(err, "could not add plugin result to plugin set")
-		}
-
-		instance, err := result.Instance()
-		if err != nil {
-			if plugin.IsSkipPlugin(err) {
-				log.G(ctx).WithError(err).WithField("type", p.Type).Infof("skip loading plugin %q...", id)
-			} else {
-				log.G(ctx).WithError(err).Warnf("failed to load plugin %s", id)
-			}
-			if _, ok := required[reqID]; ok {
-				return nil, errors.Wrapf(err, "load required plugin %s", id)
-			}
-			continue
-		}
-
-		delete(required, reqID)
-		// check for grpc services that should be registered with the server
-		if src, ok := instance.(plugin.Service); ok {
-			grpcServices = append(grpcServices, src)
-		}
-		if src, ok := instance.(plugin.TTRPCService); ok {
-			ttrpcServices = append(ttrpcServices, src)
-		}
-		if service, ok := instance.(plugin.TCPService); ok {
-			tcpServices = append(tcpServices, service)
-		}
-
-		s.plugins = append(s.plugins, result)
-	}
-	if len(required) != 0 {
-		var missing []string
-		for id := range required {
-			missing = append(missing, id)
-		}
-		return nil, errors.Errorf("required plugin %s not included", missing)
-	}
-
-	// register services after all plugins have been initialized
-	for _, service := range grpcServices {
-		if err := service.Register(grpcServer); err != nil {
-			return nil, err
-		}
-	}
-	for _, service := range ttrpcServices {
-		if err := service.RegisterTTRPC(ttrpcServer); err != nil {
-			return nil, err
-		}
-	}
-	for _, service := range tcpServices {
-		if err := service.RegisterTCP(tcpServer); err != nil {
-			return nil, err
-		}
-	}
-	return s, nil
-}
+...
 ```
 
-- 注册Plugin
+### 4.2 注册Plugin
 ```diff
 // LoadPlugins loads all plugins into containerd and generates an ordered graph
 // of all plugins.
@@ -543,7 +425,7 @@ func Graph(filter DisableFilter) (ordered []*Registration) {
 	return ordered
 }
 ```
-- Plugin初始化
+### 4.3 Plugin初始化
 ```diff
 	var (
 		grpcServer = grpc.NewServer(serverOpts...)
@@ -562,8 +444,8 @@ func Graph(filter DisableFilter) (ordered []*Registration) {
 		// TODO: Remove this in 2.0 and let event plugin crease it
 		events      = exchange.NewExchange()
 -		// 收集完成初始化的plugins
-		initialized = plugin.NewPluginSet()
-		required    = make(map[string]struct{})
++		initialized = plugin.NewPluginSet()
++		required    = make(map[string]struct{})
 	)
 
 -	// 这里plugins其实是Registration
@@ -591,9 +473,6 @@ func Graph(filter DisableFilter) (ordered []*Registration) {
 		// load the plugin specific configuration if it is provided
 		if p.Config != nil {
 			pc, err := config.Decode(p)
-			if err != nil {
-				return nil, err
-			}
 			initContext.Config = pc
 		}
 -		// Init后，返回Plugin类型对象		
