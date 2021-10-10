@@ -1,36 +1,32 @@
 # Diff服务
 > Diff 服务计算上层/下层 mount 目录的差异，遵从 OCI 规范 Changesets (变化集)打包 tar diff 镜像层存储。Apply 接口将ocispec.Descriptor的content放至指定的挂载目录。
 
-### [外部服务](https://github.com/containerd/containerd/blob/main/services/diff/service.go)
+## 1. [外部服务](https://github.com/containerd/containerd/blob/main/services/diff/service.go)
+
+### 1.1 Plugin注册
 ```diff
 func init() {
 	plugin.Register(&plugin.Registration{
 		Type: plugin.GRPCPlugin,
-		ID:   "diff",
++		ID:   "diff",
 		Requires: []plugin.Type{
 			plugin.ServicePlugin,
 		},
 		InitFn: func(ic *plugin.InitContext) (interface{}, error) {
 			plugins, err := ic.GetByType(plugin.ServicePlugin)
-			if err != nil {
-				return nil, err
-			}
+
 -			// 依赖的内部服务services.DiffService
-+			p, ok := plugins[services.DiffService]
-			if !ok {
-				return nil, errors.New("diff service not found")
-			}
+			p, ok := plugins[services.DiffService]
+
 			i, err := p.Instance()
-			if err != nil {
-				return nil, err
-			}
+
 			return &service{local: i.(diffapi.DiffClient)}, nil
 		},
 	})
 }
 ```
 
-> ***外部服务接口实现***
+### 1.2 接口实现
 ```diff
 type service struct {
 	local diffapi.DiffClient
@@ -43,7 +39,7 @@ func (s *service) Register(gs *grpc.Server) error {
 	return nil
 }
 
-- // 把content放到顶层
+- // 把content放到挂载目录
 func (s *service) Apply(ctx context.Context, er *diffapi.ApplyRequest) (*diffapi.ApplyResponse, error) {
 	return s.local.Apply(ctx, er)
 }
@@ -54,50 +50,40 @@ func (s *service) Diff(ctx context.Context, dr *diffapi.DiffRequest) (*diffapi.D
 }
 ```
 
-### [内部服务](https://github.com/containerd/containerd/blob/main/services/diff/local.go)
+## 2. [内部服务](https://github.com/containerd/containerd/blob/main/services/diff/local.go)
+### 2.1 Plugin注册
 ```diff
 func init() {
 	plugin.Register(&plugin.Registration{
 		Type: plugin.ServicePlugin,
-		ID:   services.DiffService,
++		ID:   services.DiffService,
 		Requires: []plugin.Type{
 			plugin.DiffPlugin,
 		},
 		Config: defaultDifferConfig,
 		InitFn: func(ic *plugin.InitContext) (interface{}, error) {
 -			// 依赖底层DiffPlugin
-+			differs, err := ic.GetByType(plugin.DiffPlugin)
-			if err != nil {
-				return nil, err
-			}
+			differs, err := ic.GetByType(plugin.DiffPlugin)
 
 			orderedNames := ic.Config.(*config).Order
 			ordered := make([]differ, len(orderedNames))
 			for i, n := range orderedNames {
 				differp, ok := differs[n]
-				if !ok {
-					return nil, errors.Errorf("needed differ not loaded: %s", n)
-				}
+
 				d, err := differp.Instance()
-				if err != nil {
-					return nil, errors.Wrapf(err, "could not load required differ due plugin init error: %s", n)
-				}
 
 				ordered[i], ok = d.(differ)
-				if !ok {
-					return nil, errors.Errorf("differ does not implement Comparer and Applier interface: %s", n)
-				}
 			}
 
 			return &local{
-				differs: ordered,
++				differs: ordered,
 			}, nil
 		},
 	})
 }
 ```
 
-> ***内部服务接口实现***
+### 2.2 接口实现
 ```diff
 type local struct {
 	differs []differ
@@ -119,14 +105,11 @@ func (l *local) Apply(ctx context.Context, er *diffapi.ApplyRequest, _ ...grpc.C
 	}
 
 	for _, differ := range l.differs {
+-		// 依次调用底层differ的Apply实现，直到有一个available的	
 		ocidesc, err = differ.Apply(ctx, desc, mounts, opts...)
 		if !errdefs.IsNotImplemented(err) {
 			break
 		}
-	}
-
-	if err != nil {
-		return nil, errdefs.ToGRPC(err)
 	}
 
 	return &diffapi.ApplyResponse{
@@ -155,13 +138,8 @@ func (l *local) Diff(ctx context.Context, dr *diffapi.DiffRequest, _ ...grpc.Cal
 	}
 
 	for _, d := range l.differs {
+-		// 调用底层differ的Compare	
 		ocidesc, err = d.Compare(ctx, aMounts, bMounts, opts...)
-		if !errdefs.IsNotImplemented(err) {
-			break
-		}
-	}
-	if err != nil {
-		return nil, errdefs.ToGRPC(err)
 	}
 
 	return &diffapi.DiffResponse{
@@ -199,27 +177,26 @@ func fromDescriptor(d ocispec.Descriptor) *types.Descriptor {
 	}
 }
 ```
-### [底层服务plugin.DiffPlugin](https://github.com/containerd/containerd/blob/main/diff/walking/plugin/plugin.go)
+## 3. [底层服务](https://github.com/containerd/containerd/blob/main/diff/walking/plugin/plugin.go)
+
+### 3.1 Plugin注册
 ```diff
 func init() {
 	plugin.Register(&plugin.Registration{
 		Type: plugin.DiffPlugin,
-		ID:   "walking",
++		ID:   "walking",
 		Requires: []plugin.Type{
 			plugin.MetadataPlugin,
 		},
 		InitFn: func(ic *plugin.InitContext) (interface{}, error) {
 			md, err := ic.Get(plugin.MetadataPlugin)
-			if err != nil {
-				return nil, err
-			}
 
 			ic.Meta.Platforms = append(ic.Meta.Platforms, platforms.DefaultSpec())
 			cs := md.(*metadata.DB).ContentStore()
 
 			return diffPlugin{
-				Comparer: walking.NewWalkingDiff(cs),
-				Applier:  apply.NewFileSystemApplier(cs),
++				Comparer: walking.NewWalkingDiff(cs),
++				Applier:  apply.NewFileSystemApplier(cs),
 			}, nil
 		},
 	})
@@ -251,7 +228,7 @@ type Applier interface {
 }
 ```
 
-> ***底层服务接口实现***
+### 3.2 接口实现
 ```diff
 - // walkingDiff实现Comparer接口
 // NewWalkingDiff is a generic implementation of diff.Comparer.  The diff is
@@ -278,9 +255,6 @@ func (s *walkingDiff) Compare(ctx context.Context, lower, upper []mount.Mount, o
 
 	var isCompressed bool
 	if config.Compressor != nil {
-		if config.MediaType == "" {
-			return emptyDesc, errors.New("media type must be explicitly specified when using custom compressor")
-		}
 		isCompressed = true
 	} else {
 		if config.MediaType == "" {
@@ -310,23 +284,7 @@ func (s *walkingDiff) Compare(ctx context.Context, lower, upper []mount.Mount, o
 				content.WithDescriptor(ocispec.Descriptor{
 					MediaType: config.MediaType, // most contentstore implementations just ignore this
 				}))
-			if err != nil {
-				return errors.Wrap(err, "failed to open writer")
-			}
 
-			// errOpen is set when an error occurs while the content writer has not been
-			// committed or closed yet to force a cleanup
-			var errOpen error
-			defer func() {
-				if errOpen != nil {
-					cw.Close()
-					if newReference {
-						if abortErr := s.store.Abort(ctx, config.Reference); abortErr != nil {
-							log.G(ctx).WithError(abortErr).WithField("ref", config.Reference).Warnf("failed to delete diff upload")
-						}
-					}
-				}
-			}()
 			if !newReference {
 				if errOpen = cw.Truncate(0); errOpen != nil {
 					return errOpen
@@ -338,20 +296,11 @@ func (s *walkingDiff) Compare(ctx context.Context, lower, upper []mount.Mount, o
 				var compressed io.WriteCloser
 				if config.Compressor != nil {
 					compressed, errOpen = config.Compressor(cw, config.MediaType)
-					if errOpen != nil {
-						return errors.Wrap(errOpen, "failed to get compressed stream")
-					}
 				} else {
 					compressed, errOpen = compression.CompressStream(cw, compression.Gzip)
-					if errOpen != nil {
-						return errors.Wrap(errOpen, "failed to get compressed stream")
-					}
 				}
 				errOpen = archive.WriteDiff(ctx, io.MultiWriter(compressed, dgstr.Hash()), lowerRoot, upperRoot)
 				compressed.Close()
-				if errOpen != nil {
-					return errors.Wrap(errOpen, "failed to write compressed diff")
-				}
 
 				if config.Labels == nil {
 					config.Labels = map[string]string{}
@@ -425,16 +374,6 @@ var emptyDesc = ocispec.Descriptor{}
 // necessary.
 func (s *fsApplier) Apply(ctx context.Context, desc ocispec.Descriptor, mounts []mount.Mount, opts ...diff.ApplyOpt) (d ocispec.Descriptor, err error) {
 	t1 := time.Now()
-	defer func() {
-		if err == nil {
-			log.G(ctx).WithFields(logrus.Fields{
-				"d":      time.Since(t1),
-				"digest": desc.Digest,
-				"size":   desc.Size,
-				"media":  desc.MediaType,
-			}).Debugf("diff applied")
-		}
-	}()
 
 	var config diff.ApplyConfig
 	for _, o := range opts {
@@ -478,7 +417,7 @@ func (s *fsApplier) Apply(ctx context.Context, desc ocispec.Descriptor, mounts [
 	}
 
 	for _, p := range processors {
-		if ep, ok := p.(interface {
++		if ep, ok := p.(interface {
 			Err() error
 		}); ok {
 			if err := ep.Err(); err != nil {
@@ -493,10 +432,11 @@ func (s *fsApplier) Apply(ctx context.Context, desc ocispec.Descriptor, mounts [
 	}, nil
 }
 ```
-> ***apply***Linux实现
+- ***apply***Linux实现
 ```diff
 func apply(ctx context.Context, mounts []mount.Mount, r io.Reader) error {
 	switch {
+-	// 这里只关注overlayfs	
 	case len(mounts) == 1 && mounts[0].Type == "overlay":
 		// OverlayConvertWhiteout (mknod c 0 0) doesn't work in userns.
 		// https://github.com/containerd/containerd/issues/3762
@@ -504,12 +444,6 @@ func apply(ctx context.Context, mounts []mount.Mount, r io.Reader) error {
 			break
 		}
 		path, parents, err := getOverlayPath(mounts[0].Options)
-		if err != nil {
-			if errdefs.IsInvalidArgument(err) {
-				break
-			}
-			return err
-		}
 		opts := []archive.ApplyOpt{
 			archive.WithConvertWhiteout(archive.OverlayConvertWhiteout),
 		}
@@ -517,28 +451,8 @@ func apply(ctx context.Context, mounts []mount.Mount, r io.Reader) error {
 			opts = append(opts, archive.WithParents(parents))
 		}
 -		// 解压tar文件		
-+		_, err = archive.Apply(ctx, path, r, opts...)
-		return err
-	case len(mounts) == 1 && mounts[0].Type == "aufs":
-		path, parents, err := getAufsPath(mounts[0].Options)
-		if err != nil {
-			if errdefs.IsInvalidArgument(err) {
-				break
-			}
-			return err
-		}
-		opts := []archive.ApplyOpt{
-			archive.WithConvertWhiteout(archive.AufsConvertWhiteout),
-		}
-		if len(parents) > 0 {
-			opts = append(opts, archive.WithParents(parents))
-		}
 		_, err = archive.Apply(ctx, path, r, opts...)
 		return err
-	}
-	return mount.WithTempMount(ctx, mounts, func(root string) error {
-		_, err := archive.Apply(ctx, root, r)
-		return err
-	})
+...
 }
 ```
