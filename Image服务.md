@@ -165,7 +165,7 @@ func (l *local) Delete(ctx context.Context, req *imagesapi.DeleteImageRequest, _
 
 	if err := l.publisher.Publish(ctx, "/images/delete", &eventstypes.ImageDelete{
 		Name: req.Name,
-	});
+	})
 
 	if req.Sync {
 		if _, err := l.gc.ScheduleAndWait(ctx); err != nil {}
