@@ -32,7 +32,7 @@ const (
 )
 ```
 Plugin从依赖关系上分成三个层次。
-1. GPRCPlugin属于外部服务层，也是最顶层，它把containerd里的功能通过GRPC接口提供给Client使用。外部服务层接口基本和ctr命令行是对应的，包括
+1. GPRCPlugin属于外部服务层，处于整个Contanerd服务的***顶层***，它把containerd里的功能通过GRPC接口提供给Client使用。外部服务层接口基本和ctr命令行是对应的，包括
   	- content
   	- snapshots
   	- image
@@ -44,7 +44,7 @@ Plugin从依赖关系上分成三个层次。
 	- leases
 	- introspection
 
-2. ServicePlugin属于内部服务层，是中间层，定义了containerd里的各种service，为顶层GPRCPlugin里的外部服务提供支持。它包括
+2. ServicePlugin属于内部服务层，是***中间层***，定义了containerd里的各种service，为顶层GPRCPlugin里的外部服务提供支持。它包括
 ```
 const (
 	// ContentService is id of content service.
@@ -67,7 +67,7 @@ const (
 	IntrospectionService = "introspection-service"
 )
 ```
-3. 以*ServiceName* + Plugin命名的是基础服务层，实现具体底层的功能，为上面两层提供支持，也可以是内部模块。
+3. 以*ServiceName* + Plugin命名的是基础服务层，实现具体***底层***的功能，为上面两层提供支持，也可以是内部模块。
 	- ContentPlugin
 	- SnapshotPlugin
 	- DiffPlugin
