@@ -18,7 +18,7 @@ func init() {
 -			// 依赖的内部服务services.DiffService
 			p, ok := plugins[services.DiffService]
 			i, err := p.Instance()
-			return &service{local: i.(diffapi.DiffClient)}, nil
++			return &service{local: i.(diffapi.DiffClient)}, nil
 		},
 	})
 }
@@ -81,6 +81,27 @@ func init() {
 
 ### 2.2 接口实现
 ```diff
+// Config is used to hold parameters needed for a diff operation
+type Config struct {
+	// MediaType is the type of diff to generate
+	// Default depends on the differ,
+	// i.e. application/vnd.oci.image.layer.v1.tar+gzip
+	MediaType string
+
+	// Reference is the content upload reference
+	// Default will use a random reference string
+	Reference string
+
+	// Labels are the labels to apply to the generated content
+	Labels map[string]string
+
+	// Compressor is a function to compress the diff stream
+	// instead of the default gzip compressor. Differ passes
+	// the MediaType of the target diff content to the compressor.
+	// When using this config, MediaType must be specified as well.
+	Compressor func(dest io.Writer, mediaType string) (io.WriteCloser, error)
+}
+
 type local struct {
 	differs []differ
 }
@@ -379,7 +400,7 @@ func (s *fsApplier) Apply(ctx context.Context, desc ocispec.Descriptor, mounts [
 	defer processor.Close()
 
 	digester := digest.Canonical.Digester()
-	rc := &readCounter{
++	rc := &readCounter{
 		r: io.TeeReader(processor, digester.Hash()),
 	}
 
@@ -387,11 +408,6 @@ func (s *fsApplier) Apply(ctx context.Context, desc ocispec.Descriptor, mounts [
 	// Read any trailing data
 	if _, err := io.Copy(ioutil.Discard, rc); err != nil {}
 
-	for _, p := range processors {
-+		if ep, ok := p.(interface {
-			Err() error
-		})
-	}
 	return ocispec.Descriptor{
 		MediaType: ocispec.MediaTypeImageLayer,
 		Size:      rc.c,
@@ -399,7 +415,7 @@ func (s *fsApplier) Apply(ctx context.Context, desc ocispec.Descriptor, mounts [
 	}, nil
 }
 ```
-- ***apply***Linux实现
+> ***apply***在Linux实现
 ```diff
 func apply(ctx context.Context, mounts []mount.Mount, r io.Reader) error {
 	switch {
@@ -410,6 +426,7 @@ func apply(ctx context.Context, mounts []mount.Mount, r io.Reader) error {
 		if userns.RunningInUserNS() {
 			break
 		}
+-		// 得到path=upper_dir, parents=lower_dir		
 		path, parents, err := getOverlayPath(mounts[0].Options)
 		opts := []archive.ApplyOpt{
 			archive.WithConvertWhiteout(archive.OverlayConvertWhiteout),
@@ -417,9 +434,24 @@ func apply(ctx context.Context, mounts []mount.Mount, r io.Reader) error {
 		if len(parents) > 0 {
 			opts = append(opts, archive.WithParents(parents))
 		}
--		// 解压tar文件		
+-		// 解压tar文件到path		
 		_, err = archive.Apply(ctx, path, r, opts...)
 		return err
 ...
 }
+
+func getOverlayPath(options []string) (upper string, lower []string, err error) {
+	const upperdirPrefix = "upperdir="
+	const lowerdirPrefix = "lowerdir="
+
+	for _, o := range options {
+		if strings.HasPrefix(o, upperdirPrefix) {
+			upper = strings.TrimPrefix(o, upperdirPrefix)
+		} else if strings.HasPrefix(o, lowerdirPrefix) {
+			lower = strings.Split(strings.TrimPrefix(o, lowerdirPrefix), ":")
+		}
+	}
+	return
+}
+
 ```
