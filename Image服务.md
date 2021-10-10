@@ -254,7 +254,7 @@ func (s *imageStore) Get(ctx context.Context, name string) (images.Image, error)
 		ibkt := bkt.Bucket([]byte(name))
 
 		image.Name = name
-		if err := readImage(&image, ibkt); err != nil {
++		if err := readImage(&image, ibkt); err != nil {
 			return errors.Wrapf(err, "image %q", name)
 		}
 
@@ -337,10 +337,8 @@ func (s *imageStore) Create(ctx context.Context, image images.Image) (images.Ima
 
 		image.CreatedAt = time.Now().UTC()
 		image.UpdatedAt = image.CreatedAt
-		return writeImage(ibkt, &image)
-	}); err != nil {
-		return images.Image{}, err
-	}
++		return writeImage(ibkt, &image)
+	})
 
 	return image, nil
 }
@@ -424,9 +422,7 @@ func (s *imageStore) Update(ctx context.Context, image images.Image, fieldpaths 
 			updated = image
 		}
 
-		if err := validateImage(&updated); err != nil {
-			return err
-		}
+		if err := validateImage(&updated); err != nil {}
 
 		updated.CreatedAt = createdat
 		updated.UpdatedAt = time.Now().UTC()
