@@ -17,9 +17,7 @@ func init() {
 
 -			// 依赖的内部服务services.DiffService
 			p, ok := plugins[services.DiffService]
-
 			i, err := p.Instance()
-
 			return &service{local: i.(diffapi.DiffClient)}, nil
 		},
 	})
@@ -69,9 +67,7 @@ func init() {
 			ordered := make([]differ, len(orderedNames))
 			for i, n := range orderedNames {
 				differp, ok := differs[n]
-
 				d, err := differp.Instance()
-
 				ordered[i], ok = d.(differ)
 			}
 
@@ -177,6 +173,7 @@ func fromDescriptor(d ocispec.Descriptor) *types.Descriptor {
 	}
 }
 ```
+
 ## 3. [底层服务](https://github.com/containerd/containerd/blob/main/diff/walking/plugin/plugin.go)
 
 ### 3.1 Plugin注册
@@ -347,9 +344,7 @@ func (s *walkingDiff) Compare(ctx context.Context, lower, upper []mount.Mount, o
 			}
 			return nil
 		})
-	}); err != nil {
-		return emptyDesc, err
-	}
+	})
 
 	return ocidesc, nil
 }
@@ -377,24 +372,17 @@ func (s *fsApplier) Apply(ctx context.Context, desc ocispec.Descriptor, mounts [
 
 	var config diff.ApplyConfig
 	for _, o := range opts {
-		if err := o(ctx, desc, &config); err != nil {
-			return emptyDesc, errors.Wrap(err, "failed to apply config opt")
-		}
+		if err := o(ctx, desc, &config); err != nil {}
 	}
 
 	ra, err := s.store.ReaderAt(ctx, desc)
-	if err != nil {
-		return emptyDesc, errors.Wrap(err, "failed to get reader from content store")
-	}
 	defer ra.Close()
 
 	var processors []diff.StreamProcessor
 	processor := diff.NewProcessorChain(desc.MediaType, content.NewReader(ra))
 	processors = append(processors, processor)
 	for {
-		if processor, err = diff.GetProcessor(ctx, processor, config.ProcessorPayloads); err != nil {
-			return emptyDesc, errors.Wrapf(err, "failed to get stream processor for %s", desc.MediaType)
-		}
+		if processor, err = diff.GetProcessor(ctx, processor, config.ProcessorPayloads); err != nil {}
 		processors = append(processors, processor)
 		if processor.MediaType() == ocispec.MediaTypeImageLayer {
 			break
@@ -407,23 +395,14 @@ func (s *fsApplier) Apply(ctx context.Context, desc ocispec.Descriptor, mounts [
 		r: io.TeeReader(processor, digester.Hash()),
 	}
 
-+	if err := apply(ctx, mounts, rc); err != nil {
-		return emptyDesc, err
-	}
-
++	if err := apply(ctx, mounts, rc); err != nil {}
 	// Read any trailing data
-	if _, err := io.Copy(ioutil.Discard, rc); err != nil {
-		return emptyDesc, err
-	}
+	if _, err := io.Copy(ioutil.Discard, rc); err != nil {}
 
 	for _, p := range processors {
 +		if ep, ok := p.(interface {
 			Err() error
-		}); ok {
-			if err := ep.Err(); err != nil {
-				return emptyDesc, err
-			}
-		}
+		})
 	}
 	return ocispec.Descriptor{
 		MediaType: ocispec.MediaTypeImageLayer,
