@@ -13,5 +13,5 @@ Analyze source code structure of [containerd project](https://github.com/contain
 - ctr_content_fetch_image
 - ctr_image_pull过程分析
 
-### 流程图
+### 架构图
 ![containerd代码流程](containerd_arch.png)
