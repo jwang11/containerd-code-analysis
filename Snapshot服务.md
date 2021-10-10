@@ -435,35 +435,53 @@ func (o *snapshotter) Usage(ctx context.Context, key string) (snapshots.Usage, e
 - ***Prepare***
 ```diff
 func (o *snapshotter) Prepare(ctx context.Context, key, parent string, opts ...snapshots.Opt) ([]mount.Mount, error) {
+-	// kind=snapshots.KindActive表明prepare一个active的snapshot
 +	return o.createSnapshot(ctx, snapshots.KindActive, key, parent, opts)
 }
 
 func (o *snapshotter) createSnapshot(ctx context.Context, kind snapshots.Kind, key, parent string, opts []snapshots.Opt) (_ []mount.Mount, err error) {
-	ctx, t, err := o.ms.TransactionContext(ctx, true)
++	ctx, t, err := o.ms.TransactionContext(ctx, true)
 	var td, path string
 
 	snapshotDir := filepath.Join(o.root, "snapshots")
+-	// 建立/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/$id/{fs,work}目录	
 	td, err = o.prepareDirectory(ctx, snapshotDir, kind)
 	rollback := true
-	s, err := storage.CreateSnapshot(ctx, kind, key, parent, opts...
+-	// 把新的snapshot信息写入bolt数据库	
+	s, err := storage.CreateSnapshot(ctx, kind, key, parent, opts...)
 
 	if len(s.ParentIDs) > 0 {
 		st, err := os.Stat(o.upperPath(s.ParentIDs[0]))
 		stat := st.Sys().(*syscall.Stat_t)
-
-		if err := os.Lchown(filepath.Join(td, "fs"), int(stat.Uid), int(stat.Gid)); err != nil {}
+		os.Lchown(filepath.Join(td, "fs"), int(stat.Uid), int(stat.Gid))
 	}
 
 	path = filepath.Join(snapshotDir, s.ID)
-	if err = os.Rename(td, path); err != nil {}
+	os.Rename(td, path)
 	td = ""
 
 	rollback = false
-+	if err = t.Commit(); err != nil {}
+-	// bolt库内容提交	
+	t.Commit()
 +	return o.mounts(s), nil
 }
+
+// TransactionContext creates a new transaction context. The writable value
+// should be set to true for transactions which are expected to mutate data.
+func (ms *MetaStore) TransactionContext(ctx context.Context, writable bool) (context.Context, Transactor, error) {
+	ms.dbL.Lock()
+	if ms.db == nil {
+		db, err := bolt.Open(ms.dbfile, 0600, nil)
++		ms.db = db
+	}
+	ms.dbL.Unlock()
+
+	tx, err := ms.db.Begin(writable)
+	ctx = context.WithValue(ctx, transactionKey{}, tx)
+	return ctx, tx, nil
+}
 ```
-> o.mounts(s)
+> o.mounts(s)返回mount的全部参数信息
 ```diff
 func (o *snapshotter) mounts(s storage.Snapshot) []mount.Mount {
 	if len(s.ParentIDs) == 0 {
