@@ -76,10 +76,10 @@ const (
 	- TaskMonitorPlugin
 	- GCPlugin
 
-- plugin要通过注册初始化，才能在containerd里生效。
+***plugin要通过注册初始化，才能在containerd里生效.***
 
 ## 2. Plugin的注册
-- 2.1 注册plugin，必须先定义一个***Registeration***结构作为注册申请，并填好必需的信息。
+### 2.1 注册plugin，必须先定义一个***Registeration***结构作为注册申请，并填好必需的信息。
 ```diff
 // Registration contains information for registering a plugin
 type Registration struct {
@@ -111,9 +111,9 @@ func (r *Registration) URI() string {
 }
 ```
 
-- 2.2 调用***plugin.Register***函数，把***Registration***结构作为该函数的参数。
-- 2.3 系统定义了一个全局变量***register***，所有注册的Registration都放在***register.Registration***数组里
+### 2.2 调用***plugin.Register***函数，把***Registration***结构作为该函数的参数。
 ```diff
+- 系统定义了一个全局变量***register***，所有注册的Registration都放在***register.Registration***数组里
 var register = struct {
 	sync.RWMutex
 +	r []*Registration
@@ -233,7 +233,7 @@ func (ps *Set) Get(t Type) (interface{}, error) {
 }
 ```
 
-### 3.2 InitContext初始化上下文
+### 3.3 InitContext初始化上下文
 - ***InitContext***是Init函数的入口参数，提供plugin初始化需要的上下文信息
 ```diff
 // InitContext is used for plugin inititalization
@@ -373,6 +373,7 @@ func New(ctx context.Context, config *srvconfig.Config) (*Server, error) {
 
 		tcpServerOpts = append(tcpServerOpts, grpc.Creds(credentials.NewTLS(tlsConfig)))
 	}
+- // 初始化Plugin
 ...
 ```
 
