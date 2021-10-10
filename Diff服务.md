@@ -199,11 +199,6 @@ func init() {
 	})
 }
 
-type diffPlugin struct {
-	diff.Comparer
-	diff.Applier
-}
-
 // Comparer allows creation of filesystem diffs between mounts
 type Comparer interface {
 	// Compare computes the difference between two mounts and returns a
@@ -226,8 +221,9 @@ type Applier interface {
 ```
 
 ### 3.2 接口实现
+
+- walkingDiff实现Comparer接口
 ```diff
-- // walkingDiff实现Comparer接口
 // NewWalkingDiff is a generic implementation of diff.Comparer.  The diff is
 // calculated by mounting both the upper and lower mount sets and walking the
 // mounted directories concurrently. Changes are calculated by comparing files
@@ -240,14 +236,16 @@ func NewWalkingDiff(store content.Store) diff.Comparer {
 	}
 }
 
+type walkingDiff struct {
+	store content.Store
+}
+
 // Compare creates a diff between the given mounts and uploads the result
 // to the content store.
 func (s *walkingDiff) Compare(ctx context.Context, lower, upper []mount.Mount, opts ...diff.Opt) (d ocispec.Descriptor, err error) {
 	var config diff.Config
 	for _, opt := range opts {
-		if err := opt(&config); err != nil {
-			return emptyDesc, err
-		}
+		opt(&config)
 	}
 
 	var isCompressed bool
@@ -315,26 +313,16 @@ func (s *walkingDiff) Compare(ctx context.Context, lower, upper []mount.Mount, o
 			}
 
 			dgst := cw.Digest()
-			if errOpen = cw.Commit(ctx, 0, dgst, commitopts...); errOpen != nil {
-				if !errdefs.IsAlreadyExists(errOpen) {
-					return errors.Wrap(errOpen, "failed to commit")
-				}
-				errOpen = nil
-			}
+			cw.Commit(ctx, 0, dgst, commitopts...)
 
 			info, err := s.store.Info(ctx, dgst)
-			if err != nil {
-				return errors.Wrap(err, "failed to get info from content store")
-			}
 			if info.Labels == nil {
 				info.Labels = make(map[string]string)
 			}
 			// Set uncompressed label if digest already existed without label
 			if _, ok := info.Labels[uncompressed]; !ok {
 				info.Labels[uncompressed] = config.Labels[uncompressed]
-				if _, err := s.store.Update(ctx, info, "labels."+uncompressed); err != nil {
-					return errors.Wrap(err, "error setting uncompressed label")
-				}
+				s.store.Update(ctx, info, "labels."+uncompressed)
 			}
 
 			ocidesc = ocispec.Descriptor{
@@ -350,8 +338,8 @@ func (s *walkingDiff) Compare(ctx context.Context, lower, upper []mount.Mount, o
 }
 ```
 
+- fsApplier实现Applier接口
 ```diff
-- // fsApplier实现Applier接口
 func NewFileSystemApplier(cs content.Provider) diff.Applier {
 	return &fsApplier{
 		store: cs,
