@@ -1,43 +1,32 @@
 # Tasks服务
 > Task代表执行中的Container对象，而Task服务管理这些对象。// Task is the runtime object for an executing container
 
-### 外部服务注册
-- 外部服务通过GPRC Plugin注册，ID是“tasks”，类型“plugin.GRPCPlugin”
+## 1. 外部服务
+### 1.1 Plguin注册
+外部服务通过GPRC Plugin注册，ID是“tasks”，类型“plugin.GRPCPlugin”
 ```diff
 func init() {
 	plugin.Register(&plugin.Registration{
-+		Type: plugin.GRPCPlugin,
+		Type: plugin.GRPCPlugin,
 +		ID:   "tasks",
 		Requires: []plugin.Type{
 			plugin.ServicePlugin,
 		},
 		InitFn: func(ic *plugin.InitContext) (interface{}, error) {
 			plugins, err := ic.GetByType(plugin.ServicePlugin)
-			if err != nil {
-				return nil, err
-			}
 			p, ok := plugins[services.TasksService]
-			if !ok {
-				return nil, errors.New("tasks service not found")
-			}
 			i, err := p.Instance()
-			if err != nil {
-				return nil, err
-			}
 +			return &service{local: i.(api.TasksClient)}, nil
 		},
 	})
 }
-```
 
-- 初始化函数InitFn依赖内部服务plugin.ServicePlugin[services.TaskService]，InitFn执行完后返回service结构
-```
 type service struct {
 +	local api.TasksClient
 }
 ```
 
-### 外部服务实现
+### 1.2 接口实现
 ```diff
 // TasksServer is the server API for Tasks service.
 type TasksServer interface {
@@ -96,14 +85,14 @@ func (s *service) List(ctx context.Context, r *api.ListTasksRequest) (*api.ListT
 func (s *service) Pause(ctx context.Context, r *api.PauseTaskRequest) (*ptypes.Empty, error) {
 +	return s.local.Pause(ctx, r)
 }
-
 ```
 
-### 内部服务注册
+## 2. 内部服务
+### 2.1 Plugin注册
 ```diff
 func init() {
 	plugin.Register(&plugin.Registration{
-+		Type:     plugin.ServicePlugin,
+		Type:     plugin.ServicePlugin,
 +		ID:       services.TasksService,
 		Requires: tasksServiceRequires,
 		InitFn:   initFunc,
@@ -122,34 +111,13 @@ var tasksServiceRequires = []plugin.Type{
 
 func initFunc(ic *plugin.InitContext) (interface{}, error) {
 	runtimes, err := loadV1Runtimes(ic)
-	if err != nil {
-		return nil, err
-	}
 -	// v2_runtime服务
 	v2r, err := ic.Get(plugin.RuntimePluginV2)
-	if err != nil {
-		return nil, err
-	}
-
 -	// metadata服务
 	m, err := ic.Get(plugin.MetadataPlugin)
-	if err != nil {
-		return nil, err
-	}
-
 	ep, err := ic.Get(plugin.EventPlugin)
-	if err != nil {
-		return nil, err
-	}
-
 -	// TaskMonitor服务
 	monitor, err := ic.Get(plugin.TaskMonitorPlugin)
-	if err != nil {
-		if !errdefs.IsNotFound(err) {
-			return nil, err
-		}
-		monitor = runtime.NewNoopMonitor()
-	}
 
 	db := m.(*metadata.DB)
 	l := &local{
@@ -162,17 +130,11 @@ func initFunc(ic *plugin.InitContext) (interface{}, error) {
 	}
 	for _, r := range runtimes {
 		tasks, err := r.Tasks(ic.Context, true)
-		if err != nil {
-			return nil, err
-		}
 		for _, t := range tasks {
 			l.monitor.Monitor(t, nil)
 		}
 	}
 +	v2Tasks, err := l.v2Runtime.Tasks(ic.Context, true)
-	if err != nil {
-		return nil, err
-	}
 	for _, t := range v2Tasks {
 		l.monitor.Monitor(t, nil)
 	}
@@ -180,8 +142,7 @@ func initFunc(ic *plugin.InitContext) (interface{}, error) {
 }
 ```
 
-
-### 内部服务实现
+### 2. 接口实现
 - ***接口***
 ```diff
 type TasksClient interface {
@@ -213,37 +174,7 @@ type TasksClient interface {
 ```diff
 func (l *local) Create(ctx context.Context, r *api.CreateTaskRequest, _ ...grpc.CallOption) (*api.CreateTaskResponse, error) {
 	container, err := l.getContainer(ctx, r.ContainerID)
-	if err != nil {
-		return nil, errdefs.ToGRPC(err)
-	}
-	checkpointPath, err := getRestorePath(container.Runtime.Name, r.Options)
-	if err != nil {
-		return nil, err
-	}
-	// jump get checkpointPath from checkpoint image
-	if checkpointPath == "" && r.Checkpoint != nil {
-		checkpointPath, err = ioutil.TempDir(os.Getenv("XDG_RUNTIME_DIR"), "ctrd-checkpoint")
-		if err != nil {
-			return nil, err
-		}
-		if r.Checkpoint.MediaType != images.MediaTypeContainerd1Checkpoint {
-			return nil, fmt.Errorf("unsupported checkpoint type %q", r.Checkpoint.MediaType)
-		}
-		reader, err := l.store.ReaderAt(ctx, ocispec.Descriptor{
-			MediaType:   r.Checkpoint.MediaType,
-			Digest:      r.Checkpoint.Digest,
-			Size:        r.Checkpoint.Size_,
-			Annotations: r.Checkpoint.Annotations,
-		})
-		if err != nil {
-			return nil, err
-		}
-		_, err = archive.Apply(ctx, checkpointPath, content.NewReader(reader))
-		reader.Close()
-		if err != nil {
-			return nil, err
-		}
-	}
+
 	opts := runtime.CreateOpts{
 		Spec: container.Spec,
 		IO: runtime.IO{
@@ -270,28 +201,15 @@ func (l *local) Create(ctx context.Context, r *api.CreateTaskRequest, _ ...grpc.
 		log.G(ctx).Warnf("%q is deprecated since containerd v1.4, consider using %q", plugin.RuntimeRuncV1, plugin.RuntimeRuncV2)
 	}
 	rtime, err := l.getRuntime(container.Runtime.Name)
-	if err != nil {
-		return nil, err
-	}
+
+-	// 得到runtime服务
 	_, err = rtime.Get(ctx, r.ContainerID)
-	if err != nil && err != runtime.ErrTaskNotExists {
-		return nil, errdefs.ToGRPC(err)
-	}
-	if err == nil {
-		return nil, errdefs.ToGRPC(fmt.Errorf("task %s already exists", r.ContainerID))
-	}
-	c, err := rtime.Create(ctx, r.ContainerID, opts)
-	if err != nil {
-		return nil, errdefs.ToGRPC(err)
-	}
+
++	c, err := rtime.Create(ctx, r.ContainerID, opts)
+
 	labels := map[string]string{"runtime": container.Runtime.Name}
-	if err := l.monitor.Monitor(c, labels); err != nil {
-		return nil, errors.Wrap(err, "monitor task")
-	}
+	l.monitor.Monitor(c, labels)
 	pid, err := c.PID(ctx)
-	if err != nil {
-		return nil, errors.Wrap(err, "failed to get task pid")
-	}
 	return &api.CreateTaskResponse{
 		ContainerID: r.ContainerID,
 		Pid:         pid,
@@ -303,22 +221,14 @@ func (l *local) Create(ctx context.Context, r *api.CreateTaskRequest, _ ...grpc.
 ```
 func (l *local) Start(ctx context.Context, r *api.StartRequest, _ ...grpc.CallOption) (*api.StartResponse, error) {
 	t, err := l.getTask(ctx, r.ContainerID)
-	if err != nil {
-		return nil, err
-	}
 	p := runtime.Process(t)
 	if r.ExecID != "" {
 		if p, err = t.Process(ctx, r.ExecID); err != nil {
 			return nil, errdefs.ToGRPC(err)
 		}
 	}
-	if err := p.Start(ctx); err != nil {
-		return nil, errdefs.ToGRPC(err)
-	}
+	p.Start(ctx)
 	state, err := p.State(ctx)
-	if err != nil {
-		return nil, errdefs.ToGRPC(err)
-	}
 	return &api.StartResponse{
 		Pid: state.Pid,
 	}, nil
@@ -327,89 +237,6 @@ func (l *local) Start(ctx context.Context, r *api.StartRequest, _ ...grpc.CallOp
 
 - ***其它***
 ```diff
-func (l *local) Delete(ctx context.Context, r *api.DeleteTaskRequest, _ ...grpc.CallOption) (*api.DeleteResponse, error) {
-	container, err := l.getContainer(ctx, r.ContainerID)
-	if err != nil {
-		return nil, err
-	}
-
-	// Find runtime manager
-	rtime, err := l.getRuntime(container.Runtime.Name)
-	if err != nil {
-		return nil, err
-	}
-
-	// Get task object
-	t, err := rtime.Get(ctx, container.ID)
-	if err != nil {
-		return nil, status.Errorf(codes.NotFound, "task %v not found", container.ID)
-	}
-
-	if err := l.monitor.Stop(t); err != nil {
-		return nil, err
-	}
-
-	exit, err := rtime.Delete(ctx, r.ContainerID)
-	if err != nil {
-		return nil, errdefs.ToGRPC(err)
-	}
-
-	return &api.DeleteResponse{
-		ExitStatus: exit.Status,
-		ExitedAt:   exit.Timestamp,
-		Pid:        exit.Pid,
-	}, nil
-}
-
-func (l *local) DeleteProcess(ctx context.Context, r *api.DeleteProcessRequest, _ ...grpc.CallOption) (*api.DeleteResponse, error) {
-	t, err := l.getTask(ctx, r.ContainerID)
-	if err != nil {
-		return nil, err
-	}
-	process, err := t.Process(ctx, r.ExecID)
-	if err != nil {
-		return nil, errdefs.ToGRPC(err)
-	}
-	exit, err := process.Delete(ctx)
-	if err != nil {
-		return nil, errdefs.ToGRPC(err)
-	}
-	return &api.DeleteResponse{
-		ID:         r.ExecID,
-		ExitStatus: exit.Status,
-		ExitedAt:   exit.Timestamp,
-		Pid:        exit.Pid,
-	}, nil
-}
-
-func (l *local) ListPids(ctx context.Context, r *api.ListPidsRequest, _ ...grpc.CallOption) (*api.ListPidsResponse, error) {
-	t, err := l.getTask(ctx, r.ContainerID)
-	if err != nil {
-		return nil, err
-	}
-	processList, err := t.Pids(ctx)
-	if err != nil {
-		return nil, errdefs.ToGRPC(err)
-	}
-	var processes []*task.ProcessInfo
-	for _, p := range processList {
-		pInfo := task.ProcessInfo{
-			Pid: p.Pid,
-		}
-		if p.Info != nil {
-			a, err := typeurl.MarshalAny(p.Info)
-			if err != nil {
-				return nil, errors.Wrapf(err, "failed to marshal process %d info", p.Pid)
-			}
-			pInfo.Info = a
-		}
-		processes = append(processes, &pInfo)
-	}
-	return &api.ListPidsResponse{
-		Processes: processes,
-	}, nil
-}
-
 func (l *local) Exec(ctx context.Context, r *api.ExecProcessRequest, _ ...grpc.CallOption) (*ptypes.Empty, error) {
 	if r.ExecID == "" {
 		return nil, status.Errorf(codes.InvalidArgument, "exec id cannot be empty")
@@ -430,130 +257,6 @@ func (l *local) Exec(ctx context.Context, r *api.ExecProcessRequest, _ ...grpc.C
 		return nil, errdefs.ToGRPC(err)
 	}
 	return empty, nil
-}
-
-func (l *local) ResizePty(ctx context.Context, r *api.ResizePtyRequest, _ ...grpc.CallOption) (*ptypes.Empty, error) {
-	t, err := l.getTask(ctx, r.ContainerID)
-	if err != nil {
-		return nil, err
-	}
-	p := runtime.Process(t)
-	if r.ExecID != "" {
-		if p, err = t.Process(ctx, r.ExecID); err != nil {
-			return nil, errdefs.ToGRPC(err)
-		}
-	}
-	if err := p.ResizePty(ctx, runtime.ConsoleSize{
-		Width:  r.Width,
-		Height: r.Height,
-	}); err != nil {
-		return nil, errdefs.ToGRPC(err)
-	}
-	return empty, nil
-}
-
-func (l *local) CloseIO(ctx context.Context, r *api.CloseIORequest, _ ...grpc.CallOption) (*ptypes.Empty, error) {
-	t, err := l.getTask(ctx, r.ContainerID)
-	if err != nil {
-		return nil, err
-	}
-	p := runtime.Process(t)
-	if r.ExecID != "" {
-		if p, err = t.Process(ctx, r.ExecID); err != nil {
-			return nil, errdefs.ToGRPC(err)
-		}
-	}
-	if r.Stdin {
-		if err := p.CloseIO(ctx); err != nil {
-			return nil, errdefs.ToGRPC(err)
-		}
-	}
-	return empty, nil
-}
-
-func (l *local) Checkpoint(ctx context.Context, r *api.CheckpointTaskRequest, _ ...grpc.CallOption) (*api.CheckpointTaskResponse, error) {
-	container, err := l.getContainer(ctx, r.ContainerID)
-	if err != nil {
-		return nil, err
-	}
-	t, err := l.getTaskFromContainer(ctx, container)
-	if err != nil {
-		return nil, err
-	}
-	image, err := getCheckpointPath(container.Runtime.Name, r.Options)
-	if err != nil {
-		return nil, err
-	}
-	checkpointImageExists := false
-	if image == "" {
-		checkpointImageExists = true
-		image, err = ioutil.TempDir(os.Getenv("XDG_RUNTIME_DIR"), "ctd-checkpoint")
-		if err != nil {
-			return nil, errdefs.ToGRPC(err)
-		}
-		defer os.RemoveAll(image)
-	}
-	if err := t.Checkpoint(ctx, image, r.Options); err != nil {
-		return nil, errdefs.ToGRPC(err)
-	}
-	// do not commit checkpoint image if checkpoint ImagePath is passed,
-	// return if checkpointImageExists is false
-	if !checkpointImageExists {
-		return &api.CheckpointTaskResponse{}, nil
-	}
-	// write checkpoint to the content store
-	tar := archive.Diff(ctx, "", image)
-	cp, err := l.writeContent(ctx, images.MediaTypeContainerd1Checkpoint, image, tar)
-	// close tar first after write
-	if err := tar.Close(); err != nil {
-		return nil, err
-	}
-	if err != nil {
-		return nil, err
-	}
-	// write the config to the content store
-	data, err := container.Spec.Marshal()
-	if err != nil {
-		return nil, err
-	}
-	spec := bytes.NewReader(data)
-	specD, err := l.writeContent(ctx, images.MediaTypeContainerd1CheckpointConfig, filepath.Join(image, "spec"), spec)
-	if err != nil {
-		return nil, errdefs.ToGRPC(err)
-	}
-	return &api.CheckpointTaskResponse{
-		Descriptors: []*types.Descriptor{
-			cp,
-			specD,
-		},
-	}, nil
-}
-
-func (l *local) Update(ctx context.Context, r *api.UpdateTaskRequest, _ ...grpc.CallOption) (*ptypes.Empty, error) {
-	t, err := l.getTask(ctx, r.ContainerID)
-	if err != nil {
-		return nil, err
-	}
-	if err := t.Update(ctx, r.Resources, r.Annotations); err != nil {
-		return nil, errdefs.ToGRPC(err)
-	}
-	return empty, nil
-}
-
-func (l *local) Metrics(ctx context.Context, r *api.MetricsRequest, _ ...grpc.CallOption) (*api.MetricsResponse, error) {
-	filter, err := filters.ParseAll(r.Filters...)
-	if err != nil {
-		return nil, err
-	}
-	var resp api.MetricsResponse
-	for _, r := range l.allRuntimes() {
-		tasks, err := r.Tasks(ctx, false)
-		if err != nil {
-			return nil, err
-		}
-		getTasksMetrics(ctx, filter, tasks, &resp)
-	}
-	return &resp, nil
 }
 
 func (l *local) Wait(ctx context.Context, r *api.WaitRequest, _ ...grpc.CallOption) (*api.WaitResponse, error) {
@@ -611,17 +314,9 @@ func getTasksMetrics(ctx context.Context, filter filters.Filter, tasks []runtime
 
 func (l *local) writeContent(ctx context.Context, mediaType, ref string, r io.Reader) (*types.Descriptor, error) {
 	writer, err := l.store.Writer(ctx, content.WithRef(ref), content.WithDescriptor(ocispec.Descriptor{MediaType: mediaType}))
-	if err != nil {
-		return nil, err
-	}
 	defer writer.Close()
 	size, err := io.Copy(writer, r)
-	if err != nil {
-		return nil, err
-	}
-	if err := writer.Commit(ctx, 0, ""); err != nil {
-		return nil, err
-	}
+	writer.Commit(ctx, 0, "")
 	return &types.Descriptor{
 		MediaType:   mediaType,
 		Digest:      writer.Digest(),
@@ -633,29 +328,17 @@ func (l *local) writeContent(ctx context.Context, mediaType, ref string, r io.Re
 func (l *local) getContainer(ctx context.Context, id string) (*containers.Container, error) {
 	var container containers.Container
 	container, err := l.containers.Get(ctx, id)
-	if err != nil {
-		return nil, errdefs.ToGRPC(err)
-	}
 	return &container, nil
 }
 
 func (l *local) getTask(ctx context.Context, id string) (runtime.Task, error) {
 	container, err := l.getContainer(ctx, id)
-	if err != nil {
-		return nil, err
-	}
 	return l.getTaskFromContainer(ctx, container)
 }
 
 func (l *local) getTaskFromContainer(ctx context.Context, container *containers.Container) (runtime.Task, error) {
 	runtime, err := l.getRuntime(container.Runtime.Name)
-	if err != nil {
-		return nil, errdefs.ToGRPCf(err, "runtime for task %s", container.Runtime.Name)
-	}
 	t, err := runtime.Get(ctx, container.ID)
-	if err != nil {
-		return nil, status.Errorf(codes.NotFound, "task %v not found", container.ID)
-	}
 	return t, nil
 }
 
