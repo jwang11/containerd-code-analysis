@@ -73,7 +73,7 @@ func LoadPlugins(ctx context.Context, config *srvconfig.Config) ([]*plugin.Regis
 ```
 
 ### 1.2 创建DB
-Metadata DB包括了bolt数据库，新的***contentStore***（基于contentPlugin里的content.Store），snapshotters
+Metadata DB包括了bolt数据库，新的***contentStore***（基于local Store），以及snapshotters
 ```diff
 / DB represents a metadata database backed by a bolt
 // database. The database is fully namespaced and stores
@@ -249,7 +249,6 @@ var (
 
 ### 1.4 Metadata DB接口实现
 ```diff
-Init函数在bolt库里初始化了版本信息
 // Init ensures the database is at the correct version
 // and performs any needed migrations.
 func (m *DB) Init(ctx context.Context) error {
@@ -268,12 +267,12 @@ func (m *DB) Init(ctx context.Context) error {
 ...
 
 +		bkt, err := tx.CreateBucketIfNotExists(bucketKeyVersion)
-
 +		versionEncoded, err := encodeInt(dbVersion)
 +		return bkt.Put(bucketKeyDBVersion, versionEncoded)
 	})
 	return err
 }
+
 // ContentStore returns a namespaced content store
 // proxied to a content store.
 func (m *DB) ContentStore() content.Store {
@@ -312,7 +311,6 @@ func (m *DB) Update(fn func(*bolt.Tx) error) error {
 			fn(dirty)
 		}
 	}
-
 	return err
 }
 ```
