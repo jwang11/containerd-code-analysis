@@ -368,9 +368,11 @@ func New(ctx context.Context, config *srvconfig.Config) (*Server, error) {
 ```
 
 ### 2.2 加载Plugins
-New里调用`plugins, err := LoadPlugins(ctx, config)`
+Server.New里调用`plugins, err := LoadPlugins(ctx, config)`
 
-- 按照Load方式不同，有两类Plugins，一是从指定路径自动加载，二是程序里手动加载，如ContentPlugin, MetadataPlugin
+按照Load方式不同，有两类Plugins，
+- 一是从指定路径自动加载
+- 二是程序里手动加载，如ContentPlugin, MetadataPlugin
 
 ```diff
 func LoadPlugins(ctx context.Context, config *srvconfig.Config) ([]*plugin.Registration, error) {
@@ -384,7 +386,7 @@ func LoadPlugins(ctx context.Context, config *srvconfig.Config) ([]*plugin.Regis
 	if err := plugin.Load(path); err != nil {
 		return nil, err
 	}
--	// 部分plugins需要手动加载
+-	// 部分plugins需要手动加载，详细参看[metadata服务](Metadata服务.md)
 	// load additional plugins that don't automatically register themselves
 	plugin.Register(&plugin.Registration{
 		Type: plugin.ContentPlugin,
@@ -467,54 +469,56 @@ func LoadPlugins(ctx context.Context, config *srvconfig.Config) ([]*plugin.Regis
 		},
 	})
 
-...省略proxyplugins部分...
+	clients := &proxyClients{}
+	for name, pp := range config.ProxyPlugins {
+		var (
+			t plugin.Type
+			f func(*grpc.ClientConn) interface{}
 
+			address = pp.Address
+		)
+
+		switch pp.Type {
+		case string(plugin.SnapshotPlugin), "snapshot":
+			t = plugin.SnapshotPlugin
+			ssname := name
+			f = func(conn *grpc.ClientConn) interface{} {
+				return ssproxy.NewSnapshotter(ssapi.NewSnapshotsClient(conn), ssname)
+			}
+
+		case string(plugin.ContentPlugin), "content":
+			t = plugin.ContentPlugin
+			f = func(conn *grpc.ClientConn) interface{} {
+				return csproxy.NewContentStore(csapi.NewContentClient(conn))
+			}
+		default:
+			log.G(ctx).WithField("type", pp.Type).Warn("unknown proxy plugin type")
+		}
+
+		plugin.Register(&plugin.Registration{
+			Type: t,
+			ID:   name,
+			InitFn: func(ic *plugin.InitContext) (interface{}, error) {
+				ic.Meta.Exports["address"] = address
+				conn, err := clients.getClient(address)
+				if err != nil {
+					return nil, err
+				}
+				return f(conn), nil
+			},
+		})
+
+	}
+	filter := srvconfig.V2DisabledFilter
+	if config.GetVersion() == 1 {
+		filter = srvconfig.V1DisabledFilter
+	}
 	// return the ordered graph for plugins
 +	return plugin.Graph(filter(config.DisabledPlugins)), nil
 }
 ```
 
-### 创建Server
-- 有3种server：grpcServer，和ttrpcServer，tcpServer
-```diff
-+	ttrpcServer, err := newTTRPCServer()
-+	tcpServerOpts := serverOpts
-+	var (
-+		grpcServer = grpc.NewServer(serverOpts...)
-+		tcpServer  = grpc.NewServer(tcpServerOpts...)
-
-+		grpcServices  []plugin.Service
-+		tcpServices   []plugin.TCPService
-+		ttrpcServices []plugin.TTRPCService
-
-+		s = &Server{
-+			grpcServer:  grpcServer,
-+			tcpServer:   tcpServer,
-+			ttrpcServer: ttrpcServer,
-+			config:      config,
-+		}
-```
-- 根据加载的plugins，分别为3种server注册service
-```diff
-	// register services after all plugins have been initialized
-	for _, service := range grpcServices {
-+		if err := service.Register(grpcServer); err != nil {
-			return nil, err
-		}
-	}
-	for _, service := range ttrpcServices {
-+		if err := service.RegisterTTRPC(ttrpcServer); err != nil {
-			return nil, err
-		}
-	}
-	for _, service := range tcpServices {
-+		if err := service.RegisterTCP(tcpServer); err != nil {
-			return nil, err
-		}
-	}
-```
-
-### 启动服务
+### 2.3 启动服务
 - 以grpc server为例，安装serve function
 - 回到***cmd/containerd/command/main.go***，在完成server创建和初始化后，每种server都要被serve一次，表示服务开启。
 ```diff
@@ -533,9 +537,7 @@ func serve(ctx gocontext.Context, l net.Listener, serveFunc func(net.Listener) e
 
 	go func() {
 		defer l.Close()
-+		if err := serveFunc(l); err != nil {
-			log.G(ctx).WithError(err).WithField("address", path).Fatal("serve failure")
-		}
++		serveFunc(l)
 	}()
 }
 ```
