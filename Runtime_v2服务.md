@@ -167,6 +167,7 @@ func (m *TaskManager) ID() string {
 - // 在runtime里真正创建一个container
 // Create a new task
 func (m *TaskManager) Create(ctx context.Context, id string, opts runtime.CreateOpts) (_ runtime.Task, retErr error) {
+-	// 准备rootfs目录，同时写入spec文件
 	bundle, err := NewBundle(ctx, m.root, m.state, id, opts.Spec.Value)
 +	shim, err := m.startShim(ctx, bundle, id, opts)
 +	t, err := shim.Create(ctx, opts)
