@@ -204,6 +204,9 @@ func (l *local) Create(ctx context.Context, r *api.CreateTaskRequest, _ ...grpc.
 
 -	// 得到runtime服务
 	_, err = rtime.Get(ctx, r.ContainerID)
+	if err == nil {
+		return nil, errdefs.ToGRPC(fmt.Errorf("task %s: %w", r.ContainerID, errdefs.ErrAlreadyExists))
+	}
 
 +	c, err := rtime.Create(ctx, r.ContainerID, opts)
 
@@ -214,6 +217,16 @@ func (l *local) Create(ctx context.Context, r *api.CreateTaskRequest, _ ...grpc.
 		ContainerID: r.ContainerID,
 		Pid:         pid,
 	}, nil
+}
+
+// Create a new task
+func (m *TaskManager) Create(ctx context.Context, id string, opts runtime.CreateOpts) (_ runtime.Task, retErr error) {
+	bundle, err := NewBundle(ctx, m.root, m.state, id, opts.Spec.Value)
+	shim, err := m.startShim(ctx, bundle, id, opts)
+	t, err := shim.Create(ctx, opts)
+-	// t就是Shim，实现了runtime.Task，加到TaskManger的task_list里	
+	m.tasks.Add(ctx, t)
+	return t, nil
 }
 ```
 
@@ -232,6 +245,22 @@ func (l *local) Start(ctx context.Context, r *api.StartRequest, _ ...grpc.CallOp
 	return &api.StartResponse{
 		Pid: state.Pid,
 	}, nil
+}
+
+func (l *local) getTask(ctx context.Context, id string) (runtime.Task, error) {
+	container, err := l.getContainer(ctx, id)
++	return l.getTaskFromContainer(ctx, container)
+}
+
+func (l *local) getTaskFromContainer(ctx context.Context, container *containers.Container) (runtime.Task, error) {
+	runtime, err := l.getRuntime(container.Runtime.Name)
++	t, err := runtime.Get(ctx, container.ID)
+	return t, nil
+}
+
+// Get a specific task
+func (m *TaskManager) Get(ctx context.Context, id string) (runtime.Task, error) {
+	return m.tasks.Get(ctx, id)
 }
 ```
 
@@ -261,19 +290,11 @@ func (l *local) Exec(ctx context.Context, r *api.ExecProcessRequest, _ ...grpc.C
 
 func (l *local) Wait(ctx context.Context, r *api.WaitRequest, _ ...grpc.CallOption) (*api.WaitResponse, error) {
 	t, err := l.getTask(ctx, r.ContainerID)
-	if err != nil {
-		return nil, err
-	}
 	p := runtime.Process(t)
 	if r.ExecID != "" {
-		if p, err = t.Process(ctx, r.ExecID); err != nil {
-			return nil, errdefs.ToGRPC(err)
-		}
+		t.Process(ctx, r.ExecID)
 	}
 	exit, err := p.Wait(ctx)
-	if err != nil {
-		return nil, errdefs.ToGRPC(err)
-	}
 	return &api.WaitResponse{
 		ExitStatus: exit.Status,
 		ExitedAt:   exit.Timestamp,
@@ -298,12 +319,6 @@ func getTasksMetrics(ctx context.Context, filter filters.Filter, tasks []runtime
 		}
 		collected := time.Now()
 		stats, err := tk.Stats(ctx)
-		if err != nil {
-			if !errdefs.IsNotFound(err) {
-				log.G(ctx).WithError(err).Errorf("collecting metrics for %s", tk.ID())
-			}
-			continue
-		}
 		r.Metrics = append(r.Metrics, &types.Metric{
 			Timestamp: collected,
 			ID:        tk.ID(),
@@ -331,16 +346,6 @@ func (l *local) getContainer(ctx context.Context, id string) (*containers.Contai
 	return &container, nil
 }
 
-func (l *local) getTask(ctx context.Context, id string) (runtime.Task, error) {
-	container, err := l.getContainer(ctx, id)
-	return l.getTaskFromContainer(ctx, container)
-}
-
-func (l *local) getTaskFromContainer(ctx context.Context, container *containers.Container) (runtime.Task, error) {
-	runtime, err := l.getRuntime(container.Runtime.Name)
-	t, err := runtime.Get(ctx, container.ID)
-	return t, nil
-}
 
 func (l *local) getRuntime(name string) (runtime.PlatformRuntime, error) {
 	runtime, ok := l.runtimes[name]
