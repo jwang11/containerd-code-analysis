@@ -864,22 +864,6 @@ func (nw *namespacedWriter) commit(ctx context.Context, tx *bolt.Tx, size int64,
 	boltutil.WriteLabels(bkt, base.Labels)
 	return actual, bkt.Put(bucketKeySize, sizeEncoded)
 }
-
-func (nw *namespacedWriter) Status() (st content.Status, err error) {
-	if nw.w != nil {
-		st, err = nw.w.Status()
-	} else {
-		st.Offset = nw.desc.Size
-		st.Total = nw.desc.Size
-		st.StartedAt = nw.started
-		st.UpdatedAt = nw.started
-		st.Expected = nw.desc.Digest
-	}
-	if err == nil {
-		st.Ref = nw.ref
-	}
-	return
-}
 ```
 
 - ***ReaderAt***
