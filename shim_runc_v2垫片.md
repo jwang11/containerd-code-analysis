@@ -149,16 +149,6 @@ func run(id string, initFunc Init, config Config) error {
 		initContext.Address = addressFlag
 		initContext.TTRPCAddress = ttrpcAddress
 
-		// load the plugin specific configuration if it is provided
-		//TODO: Read configuration passed into shim, or from state directory?
-		//if p.Config != nil {
-		//	pc, err := config.Decode(p)
-		//	if err != nil {
-		//		return nil, err
-		//	}
-		//	initContext.Config = pc
-		//}
-
 		result := p.Init(initContext)
 		initialized.Add(result)
 
@@ -230,9 +220,7 @@ func serve(ctx context.Context, server *ttrpc.Server, signals chan os.Signal) er
 	}()
 	return handleSignals(ctx, logger, signals)
 }
-```
->> ***serveListener***
-```diff
+
 func serveListener(path string) (net.Listener, error) {
 	var (
 		l   net.Listener
@@ -252,7 +240,7 @@ func serveListener(path string) (net.Listener, error) {
 }
 ```
 
-## 2. Shim_runc服务 
+## 2. Shim_Runc服务 
 ### 2.1 [v2.New](https://github.com/containerd/containerd/blob/main/runtime/v2/runc/v2/service.go)生成shim_runc服务，同时也是task service服务
 ```diff
 // New returns a new shim service that can be used via GRPC
@@ -322,9 +310,6 @@ type Shim interface {
 // initialize a single epoll fd to manage our consoles. `initPlatform` should
 // only be called once.
 func (s *service) initPlatform() error {
-	if s.platform != nil {
-		return nil
-	}
 +	p, err := runc.NewPlatform()
 	s.platform = p
 	return nil
@@ -350,7 +335,7 @@ func (s *service) StartShim(ctx context.Context, opts shim.StartOpts) (_ string,
 			break
 		}
 	}
--	// 生成一个新的socket地址给ttRPC server，如/var/run/containerd/2a1ba987aebca5dfa3c99d9158ded473538eb5d2e9a320baf5bcf55abb50a308
+-	// 生成一个新的socket地址，如/var/run/containerd/2a1ba987aebca5dfa3c99d9158ded473538eb5d2e9a320baf5bcf55abb50a308
 	address, err := shim.SocketAddress(ctx, opts.Address, grouping)
 
 -	// 打开address，监听socket地址，注意，这时候socket的fd=3
