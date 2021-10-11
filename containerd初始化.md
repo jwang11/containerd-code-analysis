@@ -3,7 +3,7 @@
 ---
 >Containerd是一个工业标准的容器运行时，重点是它简洁，健壮，便携，在Linux和window上可以作为一个守护进程运行，它可以管理主机系统上容器的完整的生命周期：镜像传输和存储，容器的执行和监控，低级别的存储和网络。
 
-### 主程序
+## 1. 主程序
 
 [cmd/containerd/main.go](https://github.com/containerd/containerd/blob/main/cmd/containerd/main.go)是入口文件，非常简洁
 
@@ -84,16 +84,32 @@ can be used and modified as necessary as a custom configuration.`
 		configPath := context.GlobalString("config")
 		_, err := os.Stat(configPath)
 		if !os.IsNotExist(err) || context.GlobalIsSet("config") {
-			if err := srvconfig.LoadConfig(configPath, config); err != nil {
-				return err
-			}
+			srvconfig.LoadConfig(configPath, config)
 		}
-
+-		// 命令行flags的优先级比config文件高，要apply一下
 		// Apply flags to the config
-		if err := applyFlags(context, config); err != nil {
-			return err
+		applyFlags(context, config)
+
+-		// 建立root和state顶层目录
+		// Make sure top-level directories are created early.
+		server.CreateTopLevelDirectories(config)
+
+		done := handleSignals(ctx, signals, serverC, cancel)
+		// start the signal handler as soon as we can to make sure that
+		// we don't miss any signals during boot
+		signal.Notify(signals, handledSignals...)
+
+		// cleanup temp mounts
+		mount.SetTempMountLocation(filepath.Join(config.Root, "tmpmounts"))
+		// unmount all temp mounts on boot for the server
+		warnings, err := mount.CleanupTempMounts(0)
+
+		if config.TTRPC.Address == "" {
+			// If TTRPC was not explicitly configured, use defaults based on GRPC.
+			config.TTRPC.Address = fmt.Sprintf("%s.ttrpc", config.GRPC.Address)
+			config.TTRPC.UID = config.GRPC.UID
+			config.TTRPC.GID = config.GRPC.GID
 		}
-...
 
 		log.G(ctx).WithFields(logrus.Fields{
 			"version":  version.Version,
@@ -101,47 +117,63 @@ can be used and modified as necessary as a custom configuration.`
 		}).Info("starting containerd")
 
 -		// Server的创建及初始化
-		server, err := server.New(ctx, config)
-		if err != nil {
-			return err
+		type srvResp struct {
+			s   *server.Server
+			err error
 		}
 
-		// Launch as a Windows Service if necessary
-		if err := launchService(server, done); err != nil {
-			logrus.Fatal(err)
+		// run server initialization in a goroutine so we don't end up blocking important things like SIGTERM handling
+		// while the server is initializing.
+		// As an example opening the bolt database will block forever if another containerd is already running and containerd
+		// will have to be be `kill -9`'ed to recover.
+		chsrv := make(chan srvResp)
+		go func() {
+			defer close(chsrv)
+-			// New服务器
++			server, err := server.New(ctx, config)
+			select {
+			case <-ctx.Done():
+				server.Stop()
+			case chsrv <- srvResp{s: server}:
+			}
+		}()
+
+		var server *server.Server
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case r := <-chsrv:
+			if r.err != nil {
+				return err
+			}
+			server = r.s
 		}
 
-		serverC <- server
+		// We don't send the server down serverC directly in the goroutine above because we need it lower down.
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case serverC <- server:
+		}
 
-...
+		if config.Metrics.Address != "" {
++			l, err := net.Listen("tcp", config.Metrics.Address)
+			serve(ctx, l, server.ServeMetrics)
+		}
 		// setup the ttrpc endpoint
 		tl, err := sys.GetLocalListener(config.TTRPC.Address, config.TTRPC.UID, config.TTRPC.GID)
-		if err != nil {
-			return errors.Wrapf(err, "failed to get listener for main ttrpc endpoint")
-		}
--		// 监听ttrpc Server端口		
 		serve(ctx, tl, server.ServeTTRPC)
 
 		if config.GRPC.TCPAddress != "" {
 			l, err := net.Listen("tcp", config.GRPC.TCPAddress)
-			if err != nil {
-				return errors.Wrapf(err, "failed to get listener for TCP grpc endpoint")
-			}
--			// 监听tcp Server端口			
 			serve(ctx, l, server.ServeTCP)
 		}
 		// setup the main grpc endpoint
 		l, err := sys.GetLocalListener(config.GRPC.Address, config.GRPC.UID, config.GRPC.GID)
-		if err != nil {
-			return errors.Wrapf(err, "failed to get listener for main endpoint")
-		}
--		// 监听gPRC Server端口		
-		serve(ctx, l, server.ServeGRPC)
++		serve(ctx, l, server.ServeGRPC)
 
--		// 通知systemd，containerd已经Ready
-		if err := notifyReady(ctx); err != nil {
-			log.G(ctx).WithError(err).Warn("notify ready failed")
-		}
+-		// 通知systemd，containerd在ready状态
+		err := notifyReady(ctx)
 
 		log.G(ctx).Infof("containerd successfully booted in %fs", time.Since(start).Seconds())
 		<-done
@@ -149,17 +181,18 @@ can be used and modified as necessary as a custom configuration.`
 	}
 	return app
 }
+}
 
 // notifyReady notifies systemd that the daemon is ready to serve requests
 func notifyReady(ctx context.Context) error {
 +	return sdNotify(ctx, sd.SdNotifyReady)
 }
 ```
-### Server的创建及初始化
-关键的函数是
-```diff
-+ server, err := server.New(ctx, config)
-```
+## 2. Server的创建及初始化
+
+### 2.1 创建Server
+主程序里调用`server, err := server.New(ctx, config)`
+
 该函数是创建并初始化containerd server，
 - 加载plugins，逐个调用p.Init(initContext)来初始化
 - 创建GRPCServer，TTRPCServer，tcpServer并注册服务
@@ -168,17 +201,70 @@ func notifyReady(ctx context.Context) error {
 ```diff
 // New creates and initializes a new containerd server
 func New(ctx context.Context, config *srvconfig.Config) (*Server, error) {
-	if err := apply(ctx, config); err != nil {
-		return nil, err
+-	// apply OOMScore和Cgroup
+	apply(ctx, config)
+	for key, sec := range config.Timeouts {
+		d, err := time.ParseDuration(sec)
+		timeout.Set(key, d)
 	}
-...
 -	// 自动在指定路径load plugins
 	plugins, err := LoadPlugins(ctx, config)
-...
+-	// 给Diff用的MediaType处理器,用于解压	
+	for id, p := range config.StreamProcessors {
+		diff.RegisterProcessor(diff.BinaryHandler(id, p.Returns, p.Accepts, p.Path, p.Args, p.Env))
+	}
+-	// 流式gRPC	
+	serverOpts := []grpc.ServerOption{
+		grpc.StreamInterceptor(grpc_middleware.ChainStreamServer(
+			otelgrpc.StreamServerInterceptor(),
+			grpc.StreamServerInterceptor(grpc_prometheus.StreamServerInterceptor),
+		)),
+		grpc.UnaryInterceptor(grpc_middleware.ChainUnaryServer(
+			otelgrpc.UnaryServerInterceptor(),
+			grpc.UnaryServerInterceptor(grpc_prometheus.UnaryServerInterceptor),
+		)),
+	}	
+	if config.GRPC.MaxRecvMsgSize > 0 {
+		serverOpts = append(serverOpts, grpc.MaxRecvMsgSize(config.GRPC.MaxRecvMsgSize))
+	}
+	if config.GRPC.MaxSendMsgSize > 0 {
+		serverOpts = append(serverOpts, grpc.MaxSendMsgSize(config.GRPC.MaxSendMsgSize))
+	}
 +	ttrpcServer, err := newTTRPCServer()
 
 	tcpServerOpts := serverOpts
-...
+	if config.GRPC.TCPTLSCert != "" {
+		log.G(ctx).Info("setting up tls on tcp GRPC services...")
+
+		tlsCert, err := tls.LoadX509KeyPair(config.GRPC.TCPTLSCert, config.GRPC.TCPTLSKey)
+		tlsConfig := &tls.Config{Certificates: []tls.Certificate{tlsCert}}
+
+		if config.GRPC.TCPTLSCA != "" {
+			caCertPool := x509.NewCertPool()
+			caCert, err := os.ReadFile(config.GRPC.TCPTLSCA)
+			caCertPool.AppendCertsFromPEM(caCert)
+			tlsConfig.ClientCAs = caCertPool
+			tlsConfig.ClientAuth = tls.RequireAndVerifyClientCert
+		}
+
+		tcpServerOpts = append(tcpServerOpts, grpc.Creds(credentials.NewTLS(tlsConfig)))
+	}
+	
+	// grpcService allows GRPC services to be registered with the underlying server
+	type grpcService interface {
+		Register(*grpc.Server) error
+	}
+
+	// tcpService allows GRPC services to be registered with the underlying tcp server
+	type tcpService interface {
+		RegisterTCP(*grpc.Server) error
+	}
+
+	// ttrpcService allows TTRPC services to be registered with the underlying server
+	type ttrpcService interface {
+		RegisterTTRPC(*ttrpc.Server) error
+	}
+	
 	var (
 +		grpcServer = grpc.NewServer(serverOpts...)
 +		tcpServer  = grpc.NewServer(tcpServerOpts...)
@@ -223,9 +309,6 @@ func New(ctx context.Context, config *srvconfig.Config) (*Server, error) {
 		// load the plugin specific configuration if it is provided
 		if p.Config != nil {
 			pc, err := config.Decode(p)
-			if err != nil {
-				return nil, err
-			}
 			initContext.Config = pc
 		}
 -		//初始化plugin		
@@ -235,7 +318,6 @@ func New(ctx context.Context, config *srvconfig.Config) (*Server, error) {
 		}
 
 		instance, err := result.Instance()
-...
 
 		delete(required, reqID)
 -		// 把三种类型server的services分别放入各自的列表
@@ -285,7 +367,9 @@ func New(ctx context.Context, config *srvconfig.Config) (*Server, error) {
 }
 ```
 
-### 加载Plugins
+### 2.2 加载Plugins
+New里调用`plugins, err := LoadPlugins(ctx, config)`
+
 - 按照Load方式不同，有两类Plugins，一是从指定路径自动加载，二是程序里手动加载，如ContentPlugin, MetadataPlugin
 
 ```diff
