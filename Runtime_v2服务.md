@@ -1,8 +1,10 @@
 # Runtime_v2服务
 > runtime_v2服务和shim_runc_v2垫层（独立进程）通信，做container的执行和管理。以创建容器为例，runtime_v2先启动shim_runc_v2垫层，然后垫层去执行go_runc包装层里的runc。因此，runtime_v2本质上是Container执行任务的管理器。
 
-### Runtime_v2的[注册](https://github.com/containerd/containerd/blob/main/runtime/v2/manager.go)
-- RuntimePluginV2注册申请，InitFn返回TaskManager，也就是该plugin的instance
+## 1. [Runtime_v2 Plugin](https://github.com/containerd/containerd/blob/main/runtime/v2/manager.go)
+### 1.1 Plugin注册
+RuntimePluginV2注册申请，InitFn返回TaskManager，也就是该plugin的instance
+
 ```diff
 // Config for the v2 runtime
 type Config struct {
@@ -12,7 +14,7 @@ type Config struct {
 
 func init() {
 	plugin.Register(&plugin.Registration{
-+		Type: plugin.RuntimePluginV2,
+		Type: plugin.RuntimePluginV2,
 +		ID:   "task",
 		Requires: []plugin.Type{
 			plugin.EventPlugin,
@@ -23,25 +25,12 @@ func init() {
 		},
 		InitFn: func(ic *plugin.InitContext) (interface{}, error) {
 			supportedPlatforms, err := parsePlatforms(ic.Config.(*Config).Platforms)
-			if err != nil {
-				return nil, err
-			}
 
 			ic.Meta.Platforms = supportedPlatforms
-			if err := os.MkdirAll(ic.Root, 0711); err != nil {
-				return nil, err
-			}
-			if err := os.MkdirAll(ic.State, 0711); err != nil {
-				return nil, err
-			}
+			os.MkdirAll(ic.Root, 0711)
+			os.MkdirAll(ic.State, 0711)
 			m, err := ic.Get(plugin.MetadataPlugin)
-			if err != nil {
-				return nil, err
-			}
 			ep, err := ic.GetByID(plugin.EventPlugin, "exchange")
-			if err != nil {
-				return nil, err
-			}
 +			cs := metadata.NewContainerStore(m.(*metadata.DB))
 			events := ep.(*exchange.Exchange)
 
@@ -53,9 +42,7 @@ func init() {
 // New task manager for v2 shims
 func New(ctx context.Context, root, state, containerdAddress, containerdTTRPCAddress string, events *exchange.Exchange, cs containers.Store) (*TaskManager, error) {
 	for _, d := range []string{root, state} {
-		if err := os.MkdirAll(d, 0711); err != nil {
-			return nil, err
-		}
+		os.MkdirAll(d, 0711)
 	}
 	m := &TaskManager{
 		root:                   root,
@@ -66,14 +53,10 @@ func New(ctx context.Context, root, state, containerdAddress, containerdTTRPCAdd
 		events:                 events,
 +		containers:             cs,
 	}
-	if err := m.loadExistingTasks(ctx); err != nil {
-		return nil, err
-	}
+	m.loadExistingTasks(ctx)
 	return m, nil
 }
-```
->> ***NewTaskList***和***NewContainerStorer***
-```diff
+
 // NewTaskList returns a new TaskList
 func NewTaskList() *TaskList {
 	return &TaskList{
@@ -87,7 +70,6 @@ type TaskList struct {
 	tasks map[string]map[string]Task
 }
 
-
 // NewContainerStore returns a Store backed by an underlying bolt DB
 func NewContainerStore(db *DB) containers.Store {
 	return &containerStore{	
@@ -99,24 +81,15 @@ type containerStore struct {
 }
 ```
 
->> ***TaskList实现***
+### 1.2 TaskList
 ```diff
 // Get a task
 func (l *TaskList) Get(ctx context.Context, id string) (Task, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	namespace, err := namespaces.NamespaceRequired(ctx)
-	if err != nil {
-		return nil, err
-	}
 	tasks, ok := l.tasks[namespace]
-	if !ok {
-		return nil, ErrTaskNotExists
-	}
 	t, ok := tasks[id]
-	if !ok {
-		return nil, ErrTaskNotExists
-	}
 	return t, nil
 }
 
@@ -134,13 +107,7 @@ func (l *TaskList) GetAll(ctx context.Context, noNS bool) ([]Task, error) {
 		return o, nil
 	}
 	namespace, err := namespaces.NamespaceRequired(ctx)
-	if err != nil {
-		return nil, err
-	}
 	tasks, ok := l.tasks[namespace]
-	if !ok {
-		return o, nil
-	}
 	for _, t := range tasks {
 		o = append(o, t)
 	}
@@ -150,9 +117,6 @@ func (l *TaskList) GetAll(ctx context.Context, noNS bool) ([]Task, error) {
 // Add a task
 func (l *TaskList) Add(ctx context.Context, t Task) error {
 	namespace, err := namespaces.NamespaceRequired(ctx)
-	if err != nil {
-		return err
-	}
 	return l.AddWithNamespace(namespace, t)
 }
 
@@ -171,24 +135,12 @@ func (l *TaskList) AddWithNamespace(namespace string, t Task) error {
 	l.tasks[namespace][id] = t
 	return nil
 }
-
-// Delete a task
-func (l *TaskList) Delete(ctx context.Context, id string) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	namespace, err := namespaces.NamespaceRequired(ctx)
-	if err != nil {
-		return
-	}
-	tasks, ok := l.tasks[namespace]
-	if ok {
-		delete(tasks, id)
-	}
-}
 ```
 
-### Runtime_v2的实现
-- TaskManager
+## 2. Runtime_v2服务
+TaskManager就是Runtime_V2的实现
+
+### 2.1 TasManager
 ```diff
 type TaskManager struct {
 	root                   string
@@ -207,40 +159,16 @@ func (m *TaskManager) ID() string {
 }
 ```
 
+### 2.2 接口实现
 - ***Create***
 ```diff
 - // 在runtime里真正创建一个container
 // Create a new task
 func (m *TaskManager) Create(ctx context.Context, id string, opts runtime.CreateOpts) (_ runtime.Task, retErr error) {
 	bundle, err := NewBundle(ctx, m.root, m.state, id, opts.Spec.Value)
-	if err != nil {
-		return nil, err
-	}
-	defer func() {
-		if retErr != nil {
-			bundle.Delete()
-		}
-	}()
-
 	shim, err := m.startShim(ctx, bundle, id, opts)
-	if err != nil {
-		return nil, err
-	}
-	defer func() {
-		if retErr != nil {
-			m.deleteShim(shim)
-		}
-	}()
-
 	t, err := shim.Create(ctx, opts)
-	if err != nil {
-		return nil, errors.Wrap(err, "failed to create shim")
-	}
-
-	if err := m.tasks.Add(ctx, t); err != nil {
-		return nil, errors.Wrap(err, "failed to add task")
-	}
-
+	m.tasks.Add(ctx, t)
 	return t, nil
 }
 ```
@@ -249,10 +177,6 @@ func (m *TaskManager) Create(ctx context.Context, id string, opts runtime.Create
 - // 启动shim垫片进程
 func (m *TaskManager) startShim(ctx context.Context, bundle *Bundle, id string, opts runtime.CreateOpts) (*shim, error) {
 	ns, err := namespaces.NamespaceRequired(ctx)
-	if err != nil {
-		return nil, err
-	}
-
 	topts := opts.TaskOptions
 	if topts == nil {
 		topts = opts.RuntimeOptions
@@ -269,10 +193,6 @@ func (m *TaskManager) startShim(ctx context.Context, bundle *Bundle, id string, 
 		// Thus it's better to delete it here.
 		m.tasks.Delete(ctx, id)
 	})
-	if err != nil {
-		return nil, errors.Wrap(err, "start failed")
-	}
-
 	return shim, nil
 }
 ```
@@ -312,26 +232,12 @@ func (b *binary) Start(ctx context.Context, opts *types.Any, onClose func()) (_ 
 		opts,
 		args...,
 	)
-	if err != nil {
-		return nil, err
-	}
 	// Windows needs a namespace when openShimLog
 	ns, _ := namespaces.Namespace(ctx)
 	shimCtx, cancelShimLog := context.WithCancel(namespaces.WithNamespace(context.Background(), ns))
-	defer func() {
-		if err != nil {
-			cancelShimLog()
-		}
-	}()
+
 	f, err := openShimLog(shimCtx, b.bundle, client.AnonDialer)
-	if err != nil {
-		return nil, errors.Wrap(err, "open shim log pipe")
-	}
-	defer func() {
-		if err != nil {
-			f.Close()
-		}
-	}()
+
 	// open the log pipe and block until the writer is ready
 	// this helps with synchronization of the shim
 	// copy the shim's logs to containerd's output
@@ -347,14 +253,10 @@ func (b *binary) Start(ctx context.Context, opts *types.Any, onClose func()) (_ 
 		}
 	}()
 	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return nil, errors.Wrapf(err, "%s", out)
-	}
+
 	address := strings.TrimSpace(string(out))
 	conn, err := client.Connect(address, client.AnonDialer)
-	if err != nil {
-		return nil, err
-	}
+
 	onCloseWithShimLog := func() {
 		onClose()
 		cancelShimLog()
@@ -417,13 +319,7 @@ func (m *TaskManager) loadExistingTasks(ctx context.Context) error {
 
 func (m *TaskManager) loadTasks(ctx context.Context) error {
 	ns, err := namespaces.NamespaceRequired(ctx)
-	if err != nil {
-		return err
-	}
 	shimDirs, err := ioutil.ReadDir(filepath.Join(m.state, ns))
-	if err != nil {
-		return err
-	}
 	for _, sd := range shimDirs {
 		if !sd.IsDir() {
 			continue
@@ -467,23 +363,15 @@ func (m *TaskManager) loadTasks(ctx context.Context) error {
 			// Remove self from the runtime task list.
 			m.tasks.Delete(ctx, id)
 		})
-		if err != nil {
-			cleanupAfterDeadShim(ctx, id, ns, m.tasks, m.events, binaryCall)
-			continue
-		}
 		m.tasks.Add(ctx, shim)
 	}
 	return nil
 }
 ```
-
 - ***containers***
 ```diff
 func (m *TaskManager) container(ctx context.Context, id string) (*containers.Container, error) {
 	container, err := m.containers.Get(ctx, id)
-	if err != nil {
-		return nil, err
-	}
 	return &container, nil
 }
 ```
