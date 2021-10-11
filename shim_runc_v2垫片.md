@@ -210,14 +210,7 @@ func serve(ctx context.Context, server *ttrpc.Server, signals chan os.Signal) er
 	setupDumpStacks(dump)
 
 	path, err := os.Getwd()
-	if err != nil {
-		return err
-	}
-
 +	l, err := serveListener(socketFlag)
-	if err != nil {
-		return err
-	}
 	go func() {
 		defer l.Close()
 		if err := server.Serve(ctx, l); err != nil &&
@@ -253,9 +246,6 @@ func serveListener(path string) (net.Listener, error) {
 			return nil, errors.Errorf("%q: unix socket path too long (> %d)", path, socketPathLimit)
 		}
 		l, err = net.Listen("unix", path)
-	}
-	if err != nil {
-		return nil, err
 	}
 	logrus.WithField("socket", path).Debug("serving api on socket")
 	return l, nil
@@ -427,17 +417,8 @@ func (s *service) StartShim(ctx context.Context, opts shim.StartOpts) (_ string,
 ```diff
 func newCommand(ctx context.Context, id, containerdBinary, containerdAddress, containerdTTRPCAddress string) (*exec.Cmd, error) {
 	ns, err := namespaces.NamespaceRequired(ctx)
-	if err != nil {
-		return nil, err
-	}
 	self, err := os.Executable()
-	if err != nil {
-		return nil, err
-	}
 	cwd, err := os.Getwd()
-	if err != nil {
-		return nil, err
-	}
 	args := []string{
 		"-namespace", ns,
 		"-id", id,
@@ -457,15 +438,10 @@ const socketRoot = defaults.DefaultStateDir
 // SocketAddress returns a socket address
 func SocketAddress(ctx context.Context, socketPath, id string) (string, error) {
 	ns, err := namespaces.NamespaceRequired(ctx)
-	if err != nil {
-		return "", err
-	}
 	d := sha256.Sum256([]byte(filepath.Join(socketPath, ns, id)))
 	return fmt.Sprintf("unix://%s/%x", filepath.Join(socketRoot, "s"), d), nil
 }
 ```
-
-## 3. Service实现
 - ***Create***
 ```diff
 // Create a new initial process and container with the underlying OCI runtime
@@ -474,12 +450,7 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 	defer s.mu.Unlock()
 
 +	container, err := runc.NewContainer(ctx, s.platform, r)
-	if err != nil {
-		return nil, err
-	}
-
 	s.containers[r.ID] = container
-
 	s.send(&eventstypes.TaskCreate{
 		ContainerID: r.ID,
 		Bundle:      r.Bundle,
@@ -504,16 +475,9 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 // NewContainer returns a new runc container
 func NewContainer(ctx context.Context, platform stdio.Platform, r *task.CreateTaskRequest) (_ *Container, retErr error) {
 	ns, err := namespaces.NamespaceRequired(ctx)
-	if err != nil {
-		return nil, errors.Wrap(err, "create namespace")
-	}
-
 	var opts options.Options
 	if r.Options != nil && r.Options.GetTypeUrl() != "" {
 		v, err := typeurl.UnmarshalAny(r.Options)
-		if err != nil {
-			return nil, err
-		}
 		opts = *v.(*options.Options)
 	}
 
@@ -549,20 +513,10 @@ func NewContainer(ctx context.Context, platform stdio.Platform, r *task.CreateTa
 		Options:          r.Options,
 	}
 
-	if err := WriteOptions(r.Bundle, opts); err != nil {
-		return nil, err
-	}
+	WriteOptions(r.Bundle, opts)
 	// For historical reason, we write opts.BinaryName as well as the entire opts
-	if err := WriteRuntime(r.Bundle, opts.BinaryName); err != nil {
-		return nil, err
-	}
-	defer func() {
-		if retErr != nil {
-			if err := mount.UnmountAll(rootfs, 0); err != nil {
-				logrus.WithError(err).Warn("failed to cleanup rootfs mount")
-			}
-		}
-	}()
+	WriteRuntime(r.Bundle, opts.BinaryName)
+
 	for _, rm := range mounts {
 		m := &mount.Mount{
 			Type:    rm.Type,
@@ -585,13 +539,9 @@ func NewContainer(ctx context.Context, platform stdio.Platform, r *task.CreateTa
 		&opts,
 		rootfs,
 	)
-	if err != nil {
-		return nil, errdefs.ToGRPC(err)
-	}
+
 -	// p是Init,运行Init.Create
-	if err := p.Create(ctx, config); err != nil {
-		return nil, errdefs.ToGRPC(err)
-	}
+	p.Create(ctx, config)
 	container := &Container{
 		ID:              r.ID,
 		Bundle:          r.Bundle,
@@ -604,19 +554,10 @@ func NewContainer(ctx context.Context, platform stdio.Platform, r *task.CreateTa
 		var cg interface{}
 		if cgroups.Mode() == cgroups.Unified {
 			g, err := cgroupsv2.PidGroupPath(pid)
-			if err != nil {
-				logrus.WithError(err).Errorf("loading cgroup2 for %d", pid)
-				return container, nil
-			}
 			cg, err = cgroupsv2.LoadManager("/sys/fs/cgroup", g)
-			if err != nil {
-				logrus.WithError(err).Errorf("loading cgroup2 for %d", pid)
-			}
+
 		} else {
 			cg, err = cgroups.Load(cgroups.V1, cgroups.PidPath(pid))
-			if err != nil {
-				logrus.WithError(err).Errorf("loading cgroup for %d", pid)
-			}
 		}
 		container.cgroup = cg
 	}
@@ -693,9 +634,7 @@ func (p *Init) Create(ctx context.Context, r *CreateConfig) error {
 	)
 
 	if r.Terminal {
-		if socket, err = runc.NewTempConsoleSocket(); err != nil {
-			return errors.Wrap(err, "failed to create OCI runtime console socket")
-		}
+		socket, err = runc.NewTempConsoleSocket()
 		defer socket.Close()
 	} else {
 		if pio, err = createIO(ctx, p.id, p.IoUID, p.IoGID, p.stdio); err != nil {
@@ -723,33 +662,20 @@ func (p *Init) Create(ctx context.Context, r *CreateConfig) error {
 		return p.runtimeError(err, "OCI runtime create failed")
 	}
 	if r.Stdin != "" {
-		if err := p.openStdin(r.Stdin); err != nil {
-			return err
-		}
+		p.openStdin(r.Stdin)
 	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	if socket != nil {
 -		// 获取到pty的master fd	
 		console, err := socket.ReceiveMaster()
-		if err != nil {
-			return errors.Wrap(err, "failed to retrieve console master")
-		}
 -		// 从master fd获取stdin和stdout，交给fifo处理		
 		console, err = p.Platform.CopyConsole(ctx, console, p.id, r.Stdin, r.Stdout, r.Stderr, &p.wg)
-		if err != nil {
-			return errors.Wrap(err, "failed to start console copy")
-		}
 		p.console = console
 	} else {
-		if err := pio.Copy(ctx, &p.wg); err != nil {
-			return errors.Wrap(err, "failed to start io pipe copy")
-		}
+		pio.Copy(ctx, &p.wg)
 	}
 	pid, err := pidFile.Read()
-	if err != nil {
-		return errors.Wrap(err, "failed to retrieve OCI runtime container pid")
-	}
 	p.pid = pid
 	return nil
 }
@@ -762,9 +688,6 @@ func (r *Runc) Create(context context.Context, id, bundle string, opts *CreateOp
 	args := []string{"create", "--bundle", bundle}
 	if opts != nil {
 		oargs, err := opts.args()
-		if err != nil {
-			return err
-		}
 		args = append(args, oargs...)
 	}
 	cmd := r.command(context, append(args, id)...)
@@ -776,16 +699,10 @@ func (r *Runc) Create(context context.Context, id, bundle string, opts *CreateOp
 	if cmd.Stdout == nil && cmd.Stderr == nil {
 		data, err := cmdOutput(cmd, true, nil)
 		defer putBuf(data)
-		if err != nil {
-			return fmt.Errorf("%s: %s", err, data.String())
-		}
 		return nil
 	}
 -	// 执行runc create --bundle命令	
 	ec, err := Monitor.Start(cmd)
-	if err != nil {
-		return err
-	}
 	if opts != nil && opts.IO != nil {
 		if c, ok := opts.IO.(StartCloser); ok {
 			if err := c.CloseAfterStart(); err != nil {
@@ -794,9 +711,6 @@ func (r *Runc) Create(context context.Context, id, bundle string, opts *CreateOp
 		}
 	}
 	status, err := Monitor.Wait(cmd, ec)
-	if err == nil && status != 0 {
-		err = fmt.Errorf("%s did not terminate successfully: %w", cmd.Args[0], &ExitError{status})
-	}
 	return err
 }
 ```
@@ -860,12 +774,7 @@ func (s *service) Start(ctx context.Context, r *taskAPI.StartRequest) (*taskAPI.
 // Start a container process
 func (c *Container) Start(ctx context.Context, r *task.StartRequest) (process.Process, error) {
 +	p, err := c.Process(r.ExecID)
-	if err != nil {
-		return nil, err
-	}
-+	if err := p.Start(ctx); err != nil {
-		return nil, err
-	}
++	p.Start(ctx)
 	if c.Cgroup() == nil && p.Pid() > 0 {
 		var cg interface{}
 		if cgroups.Mode() == cgroups.Unified {
@@ -874,14 +783,8 @@ func (c *Container) Start(ctx context.Context, r *task.StartRequest) (process.Pr
 				logrus.WithError(err).Errorf("loading cgroup2 for %d", p.Pid())
 			}
 			cg, err = cgroupsv2.LoadManager("/sys/fs/cgroup", g)
-			if err != nil {
-				logrus.WithError(err).Errorf("loading cgroup2 for %d", p.Pid())
-			}
 		} else {
 			cg, err = cgroups.Load(cgroups.V1, cgroups.PidPath(p.Pid()))
-			if err != nil {
-				logrus.WithError(err).Errorf("loading cgroup for %d", p.Pid())
-			}
 		}
 		c.cgroup = cg
 	}
@@ -893,15 +796,9 @@ func (c *Container) Process(id string) (process.Process, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if id == "" {
-		if c.process == nil {
-			return nil, errors.Wrapf(errdefs.ErrFailedPrecondition, "container must be created")
-		}
 		return c.process, nil
 	}
 +	p, ok := c.processes[id]
-	if !ok {
-		return nil, errors.Wrapf(errdefs.ErrNotFound, "process does not exist %s", id)
-	}
 	return p, nil
 }
 ```
