@@ -48,16 +48,8 @@ func (s *service) Register(server *grpc.Server) error {
 - ***Info***
 ```diff
 func (s *service) Info(ctx context.Context, req *api.InfoRequest) (*api.InfoResponse, error) {
-	if err := req.Digest.Validate(); err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "%q failed validation", req.Digest)
-	}
-
 -	// 调用metadata ContentStore的Info
 	bi, err := s.store.Info(ctx, req.Digest)
-	if err != nil {
-		return nil, errdefs.ToGRPC(err)
-	}
-
 	return &api.InfoResponse{
 		Info: infoToGRPC(bi),
 	}, nil
@@ -66,15 +58,9 @@ func (s *service) Info(ctx context.Context, req *api.InfoRequest) (*api.InfoResp
 - ***Update***
 ```diff
 func (s *service) Update(ctx context.Context, req *api.UpdateRequest) (*api.UpdateResponse, error) {
-	if err := req.Info.Digest.Validate(); err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "%q failed validation", req.Info.Digest)
-	}
+
 -	// 调用metadata ContentStore的Update
 	info, err := s.store.Update(ctx, infoFromGRPC(req.Info), req.UpdateMask.GetPaths()...)
-	if err != nil {
-		return nil, errdefs.ToGRPC(err)
-	}
-
 	return &api.UpdateResponse{
 		Info: infoToGRPC(info),
 	}, nil
@@ -83,6 +69,12 @@ func (s *service) Update(ctx context.Context, req *api.UpdateRequest) (*api.Upda
 
 - ***List***
 ```diff
+type Content_ReadServer interface {
+	Send(*ReadContentResponse) error
+-	// 流式gRPC	
+	grpc.ServerStream
+}
+
 func (s *service) List(req *api.ListContentRequest, session api.Content_ListServer) error {
 	var (
 		buffer    []api.Info
@@ -95,7 +87,7 @@ func (s *service) List(req *api.ListContentRequest, session api.Content_ListServ
 	)
 
 -	// 调用metadata ContentStore的Walk
-	if err := s.store.Walk(session.Context(), func(info content.Info) error {
+	s.store.Walk(session.Context(), func(info content.Info) error {
 		buffer = append(buffer, api.Info{
 			Digest:    info.Digest,
 			Size_:     info.Size,
@@ -112,53 +104,24 @@ func (s *service) List(req *api.ListContentRequest, session api.Content_ListServ
 		}
 
 		return nil
-	}, req.Filters...); err != nil {
-		return errdefs.ToGRPC(err)
 	}
 
 	if len(buffer) > 0 {
 		// send last block
-		if err := sendBlock(buffer); err != nil {
-			return err
-		}
+		sendBlock(buffer);
 	}
 
 	return nil
 }
 ```
 
-- ***Delete***
-```diff
-func (s *service) Delete(ctx context.Context, req *api.DeleteContentRequest) (*ptypes.Empty, error) {
-	log.G(ctx).WithField("digest", req.Digest).Debugf("delete content")
-	if err := req.Digest.Validate(); err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, err.Error())
-	}
-
-	if err := s.store.Delete(ctx, req.Digest); err != nil {
-		return nil, errdefs.ToGRPC(err)
-	}
-
-	return &ptypes.Empty{}, nil
-}
-```
-
 - ***Read***
 ```diff
 func (s *service) Read(req *api.ReadContentRequest, session api.Content_ReadServer) error {
-	if err := req.Digest.Validate(); err != nil {
-		return status.Errorf(codes.InvalidArgument, "%v: %v", req.Digest, err)
-	}
 
 	oi, err := s.store.Info(session.Context(), req.Digest)
-	if err != nil {
-		return errdefs.ToGRPC(err)
-	}
 -	// 调用metadata ContentStore的ReadAt
 	ra, err := s.store.ReaderAt(session.Context(), ocispec.Descriptor{Digest: req.Digest})
-	if err != nil {
-		return errdefs.ToGRPC(err)
-	}
 	defer ra.Close()
 
 	var (
@@ -177,10 +140,6 @@ func (s *service) Read(req *api.ReadContentRequest, session api.Content_ReadServ
 		offset = 0
 	}
 
-	if offset > oi.Size {
-		return status.Errorf(codes.OutOfRange, "read past object length %v bytes", oi.Size)
-	}
-
 	if size <= 0 || offset+size > oi.Size {
 		size = oi.Size - offset
 	}
@@ -197,9 +156,6 @@ func (s *service) Read(req *api.ReadContentRequest, session api.Content_ReadServ
 func (s *service) Status(ctx context.Context, req *api.StatusRequest) (*api.StatusResponse, error) {
 -	// 调用metadata ContentStore的Status
 	status, err := s.store.Status(ctx, req.Ref)
-	if err != nil {
-		return nil, errdefs.ToGRPCf(err, "could not get status for ref %q", req.Ref)
-	}
 
 	var resp api.StatusResponse
 	resp.Status = &api.Status{
@@ -209,31 +165,6 @@ func (s *service) Status(ctx context.Context, req *api.StatusRequest) (*api.Stat
 		Offset:    status.Offset,
 		Total:     status.Total,
 		Expected:  status.Expected,
-	}
-
-	return &resp, nil
-}
-```
-
-- ***ListStatuses***
-```diff
-func (s *service) ListStatuses(ctx context.Context, req *api.ListStatusesRequest) (*api.ListStatusesResponse, error) {
--	// 调用metadata ContentStore的ListStatus
-	statuses, err := s.store.ListStatuses(ctx, req.Filters...)
-	if err != nil {
-		return nil, errdefs.ToGRPC(err)
-	}
-
-	var resp api.ListStatusesResponse
-	for _, status := range statuses {
-		resp.Statuses = append(resp.Statuses, api.Status{
-			StartedAt: status.StartedAt,
-			UpdatedAt: status.UpdatedAt,
-			Ref:       status.Ref,
-			Offset:    status.Offset,
-			Total:     status.Total,
-			Expected:  status.Expected,
-		})
 	}
 
 	return &resp, nil
@@ -253,35 +184,12 @@ func (s *service) Write(session api.Content_WriteServer) (err error) {
 	)
 
 	defer func(msg *api.WriteContentResponse) {
-		// pump through the last message if no error was encountered
-		if err != nil {
-			if s, ok := status.FromError(err); ok && s.Code() != codes.AlreadyExists {
-				// TODO(stevvooe): Really need a log line here to track which
-				// errors are actually causing failure on the server side. May want
-				// to configure the service with an interceptor to make this work
-				// identically across all GRPC methods.
-				//
-				// This is pretty noisy, so we can remove it but leave it for now.
-				log.G(ctx).WithError(err).Error("(*service).Write failed")
-			}
-
-			return
-		}
-
 		err = session.Send(msg)
 	}(&msg)
 
 	// handle the very first request!
 	req, err = session.Recv()
-	if err != nil {
-		return err
-	}
-
 	ref = req.Ref
-
-	if ref == "" {
-		return status.Errorf(codes.InvalidArgument, "first message must have a reference")
-	}
 
 	fields := logrus.Fields{
 		"ref": ref,
@@ -303,18 +211,12 @@ func (s *service) Write(session api.Content_WriteServer) (err error) {
 	wr, err := s.store.Writer(ctx,
 		content.WithRef(ref),
 		content.WithDescriptor(ocispec.Descriptor{Size: total, Digest: expected}))
-	if err != nil {
-		return errdefs.ToGRPC(err)
-	}
+
 	defer wr.Close()
 
 	for {
 		msg.Action = req.Action
 		ws, err := wr.Status()
-		if err != nil {
-			return errdefs.ToGRPC(err)
-		}
-
 		msg.Offset = ws.Offset // always set the offset.
 
 		// NOTE(stevvooe): In general, there are two cases underwhich a remote
@@ -335,21 +237,8 @@ func (s *service) Write(session api.Content_WriteServer) (err error) {
 		// Supporting these two paths is quite awkward but it lets both API
 		// users use the same writer style for each with a minimum of overhead.
 		if req.Expected != "" {
-			if expected != "" && expected != req.Expected {
-				log.G(ctx).Debugf("commit digest differs from writer digest: %v != %v", req.Expected, expected)
-			}
 			expected = req.Expected
-
-			if _, err := s.store.Info(session.Context(), req.Expected); err == nil {
-				if err := wr.Close(); err != nil {
-					log.G(ctx).WithError(err).Error("failed to close writer")
-				}
-				if err := s.store.Abort(session.Context(), ref); err != nil {
-					log.G(ctx).WithError(err).Error("failed to abort write")
-				}
-
-				return status.Errorf(codes.AlreadyExists, "blob with expected digest %v exists", req.Expected)
-			}
+			s.store.Info(session.Context(), req.Expected
 		}
 
 		if req.Total > 0 {
@@ -387,16 +276,6 @@ func (s *service) Write(session api.Content_WriteServer) (err error) {
 				// While this looks like we could use io.WriterAt here, because we
 				// maintain the offset as append only, we just issue the write.
 				n, err := wr.Write(req.Data)
-				if err != nil {
-					return errdefs.ToGRPC(err)
-				}
-
-				if n != len(req.Data) {
-					// TODO(stevvooe): Perhaps, we can recover this by including it
-					// in the offset on the write return.
-					return status.Errorf(codes.DataLoss, "wrote %v of %v bytes", n, len(req.Data))
-				}
-
 				msg.Offset += int64(n)
 			}
 
@@ -416,25 +295,19 @@ func (s *service) Write(session api.Content_WriteServer) (err error) {
 		if err := session.Send(&msg); err != nil {
 			return err
 		}
-
 		req, err = session.Recv()
-		if err != nil {
-			if err == io.EOF {
-				return nil
-			}
-
-			return err
-		}
 	}
 }
 ```
 
 ## 2. 内部服务Content Service
 [services/content/store.go](https://github.com/containerd/containerd/blob/main/services/content/store.go)
+
+### 2.1 Plugin注册
 ```diff
 func init() {
 	plugin.Register(&plugin.Registration{
-+		Type: plugin.ServicePlugin,
+		Type: plugin.ServicePlugin,
 +		ID:   services.ContentService,
 		Requires: []plugin.Type{
 			plugin.EventPlugin,
@@ -442,15 +315,9 @@ func init() {
 		},
 		InitFn: func(ic *plugin.InitContext) (interface{}, error) {
 			m, err := ic.Get(plugin.MetadataPlugin)
-			if err != nil {
-				return nil, err
-			}
 			ep, err := ic.Get(plugin.EventPlugin)
-			if err != nil {
-				return nil, err
-			}
-+			// 直接复用metadata.DB里的ContentStore
-+			s, err := newContentStore(m.(*metadata.DB).ContentStore(), ep.(events.Publisher))
+-			// 直接复用metadata.DB里的ContentStore
+			s, err := newContentStore(m.(*metadata.DB).ContentStore(), ep.(events.Publisher))
 			return s, err
 		},
 	})
@@ -458,6 +325,7 @@ func init() {
 
 // store wraps content.Store with proper event published.
 type store struct {
+-	// 嵌入接口
 	content.Store
 	publisher events.Publisher
 }
