@@ -534,3 +534,62 @@ func (s *shim) Wait(ctx context.Context) (*runtime.Exit, error) {
 	}, nil
 }
 ```
+
+### 2.5 Bundle
+```diff
+// NewBundle returns a new bundle on disk
+func NewBundle(ctx context.Context, root, state, id string, spec []byte) (b *Bundle, err error) {
+	ns, err := namespaces.NamespaceRequired(ctx)
+	work := filepath.Join(root, ns, id)
+	b = &Bundle{
+		ID:        id,
+		Path:      filepath.Join(state, ns, id),
+		Namespace: ns,
+	}
+	var paths []string
+	// create state directory for the bundle
+	if err := os.MkdirAll(filepath.Dir(b.Path), 0711); err != nil {
+		return nil, err
+	}
+	if err := os.Mkdir(b.Path, 0700); err != nil {
+		return nil, err
+	}
+	if err := prepareBundleDirectoryPermissions(b.Path, spec); err != nil {
+		return nil, err
+	}
+	paths = append(paths, b.Path)
+	// create working directory for the bundle
+	if err := os.MkdirAll(filepath.Dir(work), 0711); err != nil {
+		return nil, err
+	}
+	rootfs := filepath.Join(b.Path, "rootfs")
+	if err := os.MkdirAll(rootfs, 0711); err != nil {
+		return nil, err
+	}
+	paths = append(paths, rootfs)
+	if err := os.Mkdir(work, 0711); err != nil {
+		os.RemoveAll(work)
+		if err := os.Mkdir(work, 0711); err != nil {
+			return nil, err
+		}
+	}
+	paths = append(paths, work)
+	// symlink workdir
+	if err := os.Symlink(work, filepath.Join(b.Path, "work")); err != nil {
+		return nil, err
+	}
+	// write the spec to the bundle
+	err = os.WriteFile(filepath.Join(b.Path, configFilename), spec, 0666)
+	return b, err
+}
+
+// Bundle represents an OCI bundle
+type Bundle struct {
+	// ID of the bundle
+	ID string
+	// Path to the bundle
+	Path string
+	// Namespace of the bundle
+	Namespace string
+}
+```
