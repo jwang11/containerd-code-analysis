@@ -519,15 +519,12 @@ func LoadPlugins(ctx context.Context, config *srvconfig.Config) ([]*plugin.Regis
 ```
 
 ### 2.3 启动服务
-- 以grpc server为例，安装serve function
-- 回到***cmd/containerd/command/main.go***，在完成server创建和初始化后，每种server都要被serve一次，表示服务开启。
+- 完成server创建和初始化后，每种server都要被serve一次，表示服务开启。
 ```diff
 		l, err := sys.GetLocalListener(config.GRPC.Address, config.GRPC.UID, config.GRPC.GID)
--		// 注意，第三个参数serveFunc = server.ServeGRPC
+-		// 注意第三个参数serveFunc代表了Server类型
 		serve(ctx, l, server.ServeGRPC)
 ```
-
-https://github.com/containerd/containerd/blob/d0be7b90f1306d2c7d59e28d3ffd74eddcddfa21/cmd/containerd/command/main.go#L259
 ```diff
 func serve(ctx gocontext.Context, l net.Listener, serveFunc func(net.Listener) error) {
 	path := l.Addr().String()
@@ -540,9 +537,7 @@ func serve(ctx gocontext.Context, l net.Listener, serveFunc func(net.Listener) e
 +		serveFunc(l)
 	}()
 }
-```
-(https://github.com/containerd/containerd/blob/d0be7b90f1306d2c7d59e28d3ffd74eddcddfa21/services/server/server.go#L263)
-```diff
+
 // ServeGRPC provides the containerd grpc APIs on the provided listener
 func (s *Server) ServeGRPC(l net.Listener) error {
 	if s.config.Metrics.GRPCHistogram {
