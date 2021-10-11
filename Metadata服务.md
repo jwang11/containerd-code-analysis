@@ -518,7 +518,7 @@ func (s *store) writer(ctx context.Context, ref string, total int64, expected di
 // ReaderAt returns an io.ReaderAt for the blob.
 func (s *store) ReaderAt(ctx context.Context, desc ocispec.Descriptor) (content.ReaderAt, error) {
 	p, err := s.blobPath(desc.Digest)
-	reader, err := OpenReader(p)
++	reader, err := OpenReader(p)
 	return reader, nil
 }
 
@@ -526,7 +526,25 @@ func (s *store) ReaderAt(ctx context.Context, desc ocispec.Descriptor) (content.
 func OpenReader(p string) (content.ReaderAt, error) {
 	fi, err := os.Stat(p)
 	fp, err := os.Open(p)
-	return sizeReaderAt{size: fi.Size(), fp: fp}, nil
++	return sizeReaderAt{size: fi.Size(), fp: fp}, nil
+}
+
+// readerat implements io.ReaderAt in a completely stateless manner by opening
+// the referenced file for each call to ReadAt.
+type sizeReaderAt struct {
+	size int64
+	fp   *os.File
+}
+func (ra sizeReaderAt) ReadAt(p []byte, offset int64) (int, error) {
+	return ra.fp.ReadAt(p, offset)
+}
+
+func (ra sizeReaderAt) Size() int64 {
+	return ra.size
+}
+
+func (ra sizeReaderAt) Close() error {
+	return ra.fp.Close()
 }
 ```
 
