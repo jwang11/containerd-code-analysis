@@ -1,28 +1,20 @@
 # Content服务
 > Content是提供数据存储和查询的服务，主要包括index、manifests、config、image layer。
 
-### 外部服务注册
+## 1. 外部服务
+### 1.1 Plugin注册
 ```diff
 func init() {
 	plugin.Register(&plugin.Registration{
-+		Type: plugin.GRPCPlugin,
+		Type: plugin.GRPCPlugin,
 +		ID:   "content",
 		Requires: []plugin.Type{
 			plugin.ServicePlugin,
 		},
 		InitFn: func(ic *plugin.InitContext) (interface{}, error) {
 			plugins, err := ic.GetByType(plugin.ServicePlugin)
-			if err != nil {
-				return nil, err
-			}
 			p, ok := plugins[services.ContentService]
-			if !ok {
-				return nil, errors.New("content store service not found")
-			}
 			cs, err := p.Instance()
-			if err != nil {
-				return nil, err
-			}
 +			return contentserver.New(cs.(content.Store)), nil
 		},
 	})
@@ -35,17 +27,21 @@ type store struct {
 	publisher events.Publisher
 }
 
+type service struct {
+	store content.Store
+}
+
 // New returns the content GRPC server
 func New(cs content.Store) api.ContentServer {
 +	return &service{store: cs}
 }
 ```
 
-### 外部服务实现
+### 1.2 接口实现
 - ***Register***
 ```diff
 func (s *service) Register(server *grpc.Server) error {
-	api.RegisterContentServer(server, s)
++	api.RegisterContentServer(server, s)
 	return nil
 }
 ```
@@ -433,7 +429,7 @@ func (s *service) Write(session api.Content_WriteServer) (err error) {
 }
 ```
 
-### 内部服务Content Service
+## 2. 内部服务Content Service
 [services/content/store.go](https://github.com/containerd/containerd/blob/main/services/content/store.go)
 ```diff
 func init() {
@@ -458,6 +454,12 @@ func init() {
 			return s, err
 		},
 	})
+}
+
+// store wraps content.Store with proper event published.
+type store struct {
+	content.Store
+	publisher events.Publisher
 }
 
 func newContentStore(cs content.Store, publisher events.Publisher) (content.Store, error) {
