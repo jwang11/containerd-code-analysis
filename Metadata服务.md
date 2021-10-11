@@ -1,8 +1,9 @@
-> metadata服务通过基于bolt键值数据库以及local文件库的contentStore来管理各种meta信息，包括label, content，time, manifest，config以及blob。
+# Metadata服务
+> metadata服务通过基于bolt键值数据库以及local文件库的contentStore来管理各种meta信息，包括label, content，time, manifest，config以及blob。<br>
+> metadata服务作为数据读写接口的中间层，支持其它上层和中层的服务
 
-## Metadata服务的初始化
-
-- Metadata服务是在***loadPlugins***里被注册的，它依赖ContentPlugin和SnapshotPlugin两个底层plugins，***InitFn***返回metadata.DB对象
+## 1. Metadata初始化
+Metadata服务是在***loadPlugins***里被注册的，它依赖ContentPlugin和SnapshotPlugin两个底层plugins，***InitFn***返回metadata.DB对象
 (https://github.com/containerd/containerd/blob/main/services/server/server.go)
 ```diff
 func LoadPlugins(ctx context.Context, config *srvconfig.Config) ([]*plugin.Registration, error) {
@@ -19,7 +20,7 @@ func LoadPlugins(ctx context.Context, config *srvconfig.Config) ([]*plugin.Regis
   
   	plugin.Register(&plugin.Registration{
 		Type: plugin.MetadataPlugin,
-		ID:   "bolt",
++		ID:   "bolt",
 		Requires: []plugin.Type{
 			plugin.ContentPlugin,
 			plugin.SnapshotPlugin,
@@ -28,30 +29,13 @@ func LoadPlugins(ctx context.Context, config *srvconfig.Config) ([]*plugin.Regis
 			ContentSharingPolicy: srvconfig.SharingPolicyShared,
 		},
 		InitFn: func(ic *plugin.InitContext) (interface{}, error) {
-			if err := os.MkdirAll(ic.Root, 0711); err != nil {
-				return nil, err
-			}
+			os.MkdirAll(ic.Root, 0711)
 -			// 得到第一个ContentPlugin的instance，也就是content.Store
 			cs, err := ic.Get(plugin.ContentPlugin)
-			if err != nil {
-				return nil, err
-			}
-
 			snapshottersRaw, err := ic.GetByType(plugin.SnapshotPlugin)
-			if err != nil {
-				return nil, err
-			}
-
 			snapshotters := make(map[string]snapshots.Snapshotter)
 			for name, sn := range snapshottersRaw {
 				sn, err := sn.Instance()
-				if err != nil {
-					if !plugin.IsSkipPlugin(err) {
-						log.G(ic.Context).WithError(err).
-							Warnf("could not use snapshotter %v in metadata plugin", name)
-					}
-					continue
-				}
 -				// 得到所有的Snapshotter				
 				snapshotters[name] = sn.(snapshots.Snapshotter)
 			}
@@ -60,9 +44,6 @@ func LoadPlugins(ctx context.Context, config *srvconfig.Config) ([]*plugin.Regis
 			ic.Meta.Exports["policy"] = srvconfig.SharingPolicyShared
 			if cfg, ok := ic.Config.(*srvconfig.BoltConfig); ok {
 				if cfg.ContentSharingPolicy != "" {
-					if err := cfg.Validate(); err != nil {
-						return nil, err
-					}
 					if cfg.ContentSharingPolicy == srvconfig.SharingPolicyIsolated {
 						ic.Meta.Exports["policy"] = srvconfig.SharingPolicyIsolated
 						shared = false
@@ -76,18 +57,13 @@ func LoadPlugins(ctx context.Context, config *srvconfig.Config) ([]*plugin.Regis
 			ic.Meta.Exports["path"] = path
 -			// 创建bolt数据库
 			db, err := bolt.Open(path, 0644, nil)
-			if err != nil {
-				return nil, err
-			}
 
 			var dbopts []metadata.DBOpt
 			if !shared {
 				dbopts = append(dbopts, metadata.WithPolicyIsolated)
 			}
 +			mdb := metadata.NewDB(db, cs.(content.Store), snapshotters, dbopts...)
-+			if err := mdb.Init(ic.Context); err != nil {
-				return nil, err
-			}
++			mdb.Init(ic.Context)
 			return mdb, nil
 		},
 	})
@@ -95,10 +71,23 @@ func LoadPlugins(ctx context.Context, config *srvconfig.Config) ([]*plugin.Regis
 }
 ```
 
-### ContentPlugin注册
-- 这个local store是基于文件系统的
-[local store](https://github.com/containerd/containerd/blob/main/content/local/store.go)
+## 2. Content服务
+### 2.1 Plugin注册
 ```diff
+func LoadPlugins(ctx context.Context, config *srvconfig.Config) ([]*plugin.Registration, error) {
+...
+	// load additional plugins that don't automatically register themselves
+	plugin.Register(&plugin.Registration{
+		Type: plugin.ContentPlugin,
++		ID:   "content",
+		InitFn: func(ic *plugin.InitContext) (interface{}, error) {
+			ic.Meta.Exports["root"] = ic.Root
++			return local.NewStore(ic.Root)
+		},
+	})
+...
+}
+
 // NewStore returns a local content store
 func NewStore(root string) (content.Store, error) {
 	return NewLabeledStore(root, nil)
@@ -110,16 +99,18 @@ func NewStore(root string) (content.Store, error) {
 // require labels and should use `NewStore`. `NewLabeledStore` is primarily
 // useful for tests or standalone implementations.
 func NewLabeledStore(root string, ls LabelStore) (content.Store, error) {
-	if err := os.MkdirAll(filepath.Join(root, "ingest"), 0777); err != nil {
-		return nil, err
-	}
-
+	os.MkdirAll(filepath.Join(root, "ingest"), 0777)
 	return &store{
 		root: root,
 		ls:   ls,
 	}, nil
 }
+```
 
+### 2.2 接口实现
+local store是基于文件系统的，可以为Meta里面content store提供基础功能
+[local store](https://github.com/containerd/containerd/blob/main/content/local/store.go)
+```diff
 -// Store存放的内容都是有摘要的，可以校验内容完整性
 // Store is digest-keyed store for content. All data written into the store is
 // stored under a verifiable digest.
@@ -130,16 +121,8 @@ type store struct {
 	root string
 	ls   LabelStore
 }
-```
-
-> ***local store的实现是基于文件目录，为Meta里面content store提供基础功能***
-```diff
 
 func (s *store) blobPath(dgst digest.Digest) (string, error) {
-	if err := dgst.Validate(); err != nil {
-		return "", errors.Wrapf(errdefs.ErrInvalidArgument, "cannot calculate blob path from invalid digest: %v", err)
-	}
-
 	return filepath.Join(s.root, "blobs", dgst.Algorithm().String(), dgst.Hex()), nil
 }
 
@@ -174,51 +157,29 @@ func readFileString(path string) (string, error) {
 // readFileTimestamp reads a file with just a timestamp present.
 func readFileTimestamp(p string) (time.Time, error) {
 	b, err := ioutil.ReadFile(p)
-	if err != nil {
-		if os.IsNotExist(err) {
-			err = errors.Wrap(errdefs.ErrNotFound, err.Error())
-		}
-		return time.Time{}, err
-	}
-
 	var t time.Time
-	if err := t.UnmarshalText(b); err != nil {
-		return time.Time{}, errors.Wrapf(err, "could not parse timestamp file %v", p)
-	}
-
+	t.UnmarshalText(b)
 	return t, nil
 }
 
 func writeTimestampFile(p string, t time.Time) error {
 	b, err := t.MarshalText()
-	if err != nil {
-		return err
-	}
 	return writeToCompletion(p, b, 0666)
 }
 
 func writeToCompletion(path string, data []byte, mode os.FileMode) error {
 	tmp := fmt.Sprintf("%s.tmp", path)
 	f, err := os.OpenFile(tmp, os.O_RDWR|os.O_CREATE|os.O_TRUNC|os.O_SYNC, mode)
-	if err != nil {
-		return errors.Wrap(err, "create tmp file")
-	}
 	_, err = f.Write(data)
 	f.Close()
-	if err != nil {
-		return errors.Wrap(err, "write tmp file")
-	}
 	err = os.Rename(tmp, path)
-	if err != nil {
-		return errors.Wrap(err, "rename tmp file")
-	}
 	return nil
 }
 ```
-> ***local store的Writer***
-```diff
-- Writer的设计是支持简单的事务处理，内容先写入ingest里，commit的时候再导入blob
-```
+
+- ***Writer***
+
+Writer的设计是支持简单的事务处理，内容先写入ingest里，commit的时候再导入blob
 ```diff
 // Writer begins or resumes the active writer identified by ref. If the writer
 // is already in use, an error is returned. Only one writer may be in use per
@@ -228,22 +189,12 @@ func writeToCompletion(path string, data []byte, mode os.FileMode) error {
 func (s *store) Writer(ctx context.Context, opts ...content.WriterOpt) (content.Writer, error) {
 	var wOpts content.WriterOpts
 	for _, opt := range opts {
-		if err := opt(&wOpts); err != nil {
-			return nil, err
-		}
+		opt(&wOpts)
 	}
-	// TODO(AkihiroSuda): we could create a random string or one calculated based on the context
-	// https://github.com/containerd/containerd/issues/2129#issuecomment-380255019
-	if wOpts.Ref == "" {
-		return nil, errors.Wrap(errdefs.ErrInvalidArgument, "ref must not be empty")
-	}
+
 	var lockErr error
 	for count := uint64(0); count < 10; count++ {
 		if err := tryLock(wOpts.Ref); err != nil {
-			if !errdefs.IsUnavailable(err) {
-				return nil, err
-			}
-
 			lockErr = err
 		} else {
 			lockErr = nil
@@ -251,17 +202,7 @@ func (s *store) Writer(ctx context.Context, opts ...content.WriterOpt) (content.
 		}
 		time.Sleep(time.Millisecond * time.Duration(rand.Intn(1<<count)))
 	}
-
-	if lockErr != nil {
-		return nil, lockErr
-	}
-
 	w, err := s.writer(ctx, wOpts.Ref, wOpts.Desc.Size, wOpts.Desc.Digest)
-	if err != nil {
-		unlock(wOpts.Ref)
-		return nil, err
-	}
-
 	return w, nil // lock is now held by w.
 }
 
@@ -272,12 +213,6 @@ func (s *store) writer(ctx context.Context, ref string, total int64, expected di
 	// code in the service that shouldn't be dealing with this.
 	if expected != "" {
 		p, err := s.blobPath(expected)
-		if err != nil {
-			return nil, errors.Wrap(err, "calculating expected blob path for writer")
-		}
-		if _, err := os.Stat(p); err == nil {
-			return nil, errors.Wrapf(errdefs.ErrAlreadyExists, "content %v", expected)
-		}
 	}
 
 	path, refp, data := s.ingestPaths(ref)
@@ -292,9 +227,6 @@ func (s *store) writer(ctx context.Context, ref string, total int64, expected di
 	foundValidIngest := false
 	// ensure that the ingest path has been created.
 	if err := os.Mkdir(path, 0755); err != nil {
-		if !os.IsExist(err) {
-			return nil, err
-		}
 		status, err := s.resumeStatus(ref, total, digester)
 		if err == nil {
 			foundValidIngest = true
@@ -302,8 +234,6 @@ func (s *store) writer(ctx context.Context, ref string, total int64, expected di
 			startedAt = status.StartedAt
 			total = status.Total
 			offset = status.Offset
-		} else {
-			logrus.Infof("failed to resume the status from path %s: %s. will recreate them", path, err.Error())
 		}
 	}
 
@@ -313,33 +243,17 @@ func (s *store) writer(ctx context.Context, ref string, total int64, expected di
 
 		// the ingest is new, we need to setup the target location.
 		// write the ref to a file for later use
-		if err := ioutil.WriteFile(refp, []byte(ref), 0666); err != nil {
-			return nil, err
-		}
-
-		if err := writeTimestampFile(filepath.Join(path, "startedat"), startedAt); err != nil {
-			return nil, err
-		}
-
-		if err := writeTimestampFile(filepath.Join(path, "updatedat"), startedAt); err != nil {
-			return nil, err
-		}
+		WriteFile(refp, []byte(ref), 0666)
+		writeTimestampFile(filepath.Join(path, "startedat"), startedAt)
+		writeTimestampFile(filepath.Join(path, "updatedat"), startedAt)
 
 		if total > 0 {
-			if err := ioutil.WriteFile(filepath.Join(path, "total"), []byte(fmt.Sprint(total)), 0666); err != nil {
-				return nil, err
-			}
+			ioutil.WriteFile(filepath.Join(path, "total"), []byte(fmt.Sprint(total)), 0666)
 		}
 	}
 
 	fp, err := os.OpenFile(data, os.O_WRONLY|os.O_CREATE, 0666)
-	if err != nil {
-		return nil, errors.Wrap(err, "failed to open data file")
-	}
-
-	if _, err := fp.Seek(offset, io.SeekStart); err != nil {
-		return nil, errors.Wrap(err, "could not seek to current write offset")
-	}
+	fp.Seek(offset, io.SeekStart)
 
 	return &writer{
 		s:         s,
@@ -355,50 +269,26 @@ func (s *store) writer(ctx context.Context, ref string, total int64, expected di
 }
 ```
 
-> ***local store的ReaderAt***
+- ***ReaderAt***
 ```diff
 // ReaderAt returns an io.ReaderAt for the blob.
 func (s *store) ReaderAt(ctx context.Context, desc ocispec.Descriptor) (content.ReaderAt, error) {
 	p, err := s.blobPath(desc.Digest)
-	if err != nil {
-		return nil, errors.Wrapf(err, "calculating blob path for ReaderAt")
-	}
-
 	reader, err := OpenReader(p)
-	if err != nil {
-		return nil, errors.Wrapf(err, "blob %s expected at %s", desc.Digest, p)
-	}
-
 	return reader, nil
 }
 
 // OpenReader creates ReaderAt from a file
 func OpenReader(p string) (content.ReaderAt, error) {
 	fi, err := os.Stat(p)
-	if err != nil {
-		if !os.IsNotExist(err) {
-			return nil, err
-		}
-
-		return nil, errors.Wrap(errdefs.ErrNotFound, "blob not found")
-	}
-
 	fp, err := os.Open(p)
-	if err != nil {
-		if !os.IsNotExist(err) {
-			return nil, err
-		}
-
-		return nil, errors.Wrap(errdefs.ErrNotFound, "blob not found")
-	}
-
 	return sizeReaderAt{size: fi.Size(), fp: fp}, nil
 }
-
 ```
 
-### Metadata DB的实现
-- Metadata DB包括了bolt数据库，新的***contentStore***（基于contentPlugin里的content.Store），snapshotters
+## 3. Metadata DB
+
+Metadata DB包括了bolt数据库，新的***contentStore***（基于contentPlugin里的content.Store），snapshotters
 ```
 / DB represents a metadata database backed by a bolt
 // database. The database is fully namespaced and stores
