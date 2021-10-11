@@ -4,7 +4,7 @@
 > 2. 作为容器的父进程，当容器中的第一个实例进程被杀死后，负责给其子进程收尸，避免出现僵尸进程
 > 3. 监控容器中运行的进程状态，当容器执行完成后，通过exit fifo文件来返回容器进程结束状态
 
-### [主程序](https://github.com/containerd/containerd/blob/main/cmd/containerd-shim-runc-v2/main.go)
+## 1. [主程序](https://github.com/containerd/containerd/blob/main/cmd/containerd-shim-runc-v2/main.go)
 ```diff
 import (
 	v2 "github.com/containerd/containerd/runtime/v2/runc/v2"
@@ -15,7 +15,8 @@ func main() {
 +	shim.Run("io.containerd.runc.v2", v2.New)
 }
 ```
-- [shim.Run](https://github.com/containerd/containerd/blob/main/runtime/v2/shim/shim.go)，注意参数initFunc=v2.New
+
+### 1.1 [shim.Run](https://github.com/containerd/containerd/blob/main/runtime/v2/shim/shim.go)，注意参数initFunc=v2.New
 ```diff
 // Run initializes and runs a shim server
 func Run(id string, initFunc Init, opts ...BinaryOpts) {
@@ -23,10 +24,7 @@ func Run(id string, initFunc Init, opts ...BinaryOpts) {
 	for _, o := range opts {
 		o(&config)
 	}
-+	if err := run(id, initFunc, config); err != nil {
-		fmt.Fprintf(os.Stderr, "%s: %s\n", id, err)
-		os.Exit(1)
-	}
++	run(id, initFunc, config)
 }
 
 func parseFlags() {
@@ -55,30 +53,18 @@ func run(id string, initFunc Init, config Config) error {
 		return nil
 	}
 
-	if namespaceFlag == "" {
-		return fmt.Errorf("shim namespace cannot be empty")
-	}
-
 	setRuntime()
 
 	signals, err := setupSignals(config)
-	if err != nil {
-		return err
-	}
 
 -	// 指定shim是subreaper
 	if !config.NoSubreaper {
-		if err := subreaper(); err != nil {
-			return err
-		}
+		subreaper()
 	}
 
 -	// 环境变量得到ttrpc address
 	ttrpcAddress := os.Getenv(ttrpcAddressEnv)
 	publisher, err := NewPublisher(ttrpcAddress)
-	if err != nil {
-		return err
-	}
 	defer publisher.Close()
 
 	ctx := namespaces.WithNamespace(context.Background(), namespaceFlag)
@@ -87,9 +73,6 @@ func run(id string, initFunc Init, config Config) error {
 	ctx, cancel := context.WithCancel(ctx)
 -	// 创建task service	
 	service, err := initFunc(ctx, idFlag, publisher, cancel)
-	if err != nil {
-		return err
-	}
 
 	// Handle explicit actions
 	switch action {
@@ -100,16 +83,8 @@ func run(id string, initFunc Init, config Config) error {
 		})
 		go handleSignals(ctx, logger, signals)
 		response, err := service.Cleanup(ctx)
-		if err != nil {
-			return err
-		}
 		data, err := proto.Marshal(response)
-		if err != nil {
-			return err
-		}
-		if _, err := os.Stdout.Write(data); err != nil {
-			return err
-		}
+		os.Stdout.Write(data)
 		return nil
 	case "start":
 		opts := StartOpts{
@@ -120,20 +95,14 @@ func run(id string, initFunc Init, config Config) error {
 		}
 -		// 启动一个新的shim进程
 		address, err := service.StartShim(ctx, opts)
-		if err != nil {
-			return err
-		}
-		if _, err := os.Stdout.WriteString(address); err != nil {
-			return err
-		}
+-		// 打印地址，runtime_v2端可以获得		
+		os.Stdout.WriteString(address)
 		return nil
 	}
 
 
 	if !config.NoSetupLogger {
-		if err := setLogger(ctx, idFlag); err != nil {
-			return err
-		}
+		setLogger(ctx, idFlag)
 	}
 
 	// Register event plugin
@@ -191,20 +160,9 @@ func run(id string, initFunc Init, config Config) error {
 		//}
 
 		result := p.Init(initContext)
-		if err := initialized.Add(result); err != nil {
-			return errors.Wrapf(err, "could not add plugin result to plugin set")
-		}
+		initialized.Add(result)
 
 		instance, err := result.Instance()
-		if err != nil {
-			if plugin.IsSkipPlugin(err) {
-				log.G(ctx).WithError(err).WithField("type", p.Type).Infof("skip loading plugin %q...", id)
-			} else {
-				log.G(ctx).WithError(err).Warnf("failed to load plugin %s", id)
-			}
-			continue
-		}
-
 		if src, ok := instance.(ttrpcService); ok {
 			logrus.WithField("id", id).Debug("registering ttrpc service")
 			ttrpcServices = append(ttrpcServices, src)
@@ -212,15 +170,10 @@ func run(id string, initFunc Init, config Config) error {
 	}
 -	// 创建ttRPC server
 	server, err := newServer()
-	if err != nil {
-		return errors.Wrap(err, "failed creating server")
-	}
 
 -	// 调用每个service的RegisterTTRPC方法，完成初始化
 	for _, srv := range ttrpcServices {
-		if err := srv.RegisterTTRPC(server); err != nil {
-			return errors.Wrap(err, "failed to register service")
-		}
+		srv.RegisterTTRPC(server)
 	}
 
 -	// 监听服务端口，ttRPC服务正式上线
@@ -309,7 +262,8 @@ func serveListener(path string) (net.Listener, error) {
 }
 ```
 
-### [v2.New](https://github.com/containerd/containerd/blob/main/runtime/v2/runc/v2/service.go)生成shim服务，同时也是task service服务
+## 2. Shim_runc服务 
+### 2.1 [v2.New](https://github.com/containerd/containerd/blob/main/runtime/v2/runc/v2/service.go)生成shim_runc服务，同时也是task service服务
 ```diff
 // New returns a new shim service that can be used via GRPC
 func New(ctx context.Context, id string, publisher shim.Publisher, shutdown func()) (shim.Shim, error) {
@@ -322,9 +276,7 @@ func New(ctx context.Context, id string, publisher shim.Publisher, shutdown func
 	} else {
 		ep, err = oomv1.New(publisher)
 	}
-	if err != nil {
-		return nil, err
-	}
+
 	go ep.Run(ctx)
 -	// 既实现了shim.Shim接口，也实现了taskService接口
 	s := &service{
@@ -338,10 +290,7 @@ func New(ctx context.Context, id string, publisher shim.Publisher, shutdown func
 	}
 	go s.processExits()
 	runcC.Monitor = reaper.Default
-+	if err := s.initPlatform(); err != nil {
-		shutdown()
-		return nil, errors.Wrap(err, "failed to initialized platform behavior")
-	}
++	s.initPlatform()
 +	go s.forward(ctx, publisher)
 
 	if address, err := shim.ReadAddress("address"); err == nil {
@@ -375,9 +324,9 @@ type Shim interface {
 	Cleanup(ctx context.Context) (*shimapi.DeleteResponse, error)
 	StartShim(ctx context.Context, opts StartOpts) (string, error)
 }
-
 ```
 
+### 2.2 接口实现
 - ***shim_runc service***实现
 ```diff
 // initialize a single epoll fd to manage our consoles. `initPlatform` should
@@ -387,18 +336,12 @@ func (s *service) initPlatform() error {
 		return nil
 	}
 +	p, err := runc.NewPlatform()
-	if err != nil {
-		return err
-	}
 	s.platform = p
 	return nil
 }
 
 func NewPlatform() (stdio.Platform, error) {
 	epoller, err := console.NewEpoller()
-	if err != nil {
-		return nil, errors.Wrap(err, "failed to initialize epoller")
-	}
 	go epoller.Wait()
 	return &linuxPlatform{
 		epoller: epoller,
@@ -407,17 +350,10 @@ func NewPlatform() (stdio.Platform, error) {
 ```
 - ***startShim***生成新的Shim进程
 ```diff
-
 func (s *service) StartShim(ctx context.Context, opts shim.StartOpts) (_ string, retErr error) {
 	cmd, err := newCommand(ctx, opts.ID, opts.ContainerdBinary, opts.Address, opts.TTRPCAddress)
-	if err != nil {
-		return "", err
-	}
 	grouping := opts.ID
 	spec, err := readSpec()
-	if err != nil {
-		return "", err
-	}
 	for _, group := range groupLabels {
 		if groupID, ok := spec.Annotations[group]; ok {
 			grouping = groupID
@@ -426,56 +362,19 @@ func (s *service) StartShim(ctx context.Context, opts shim.StartOpts) (_ string,
 	}
 -	// 生成一个新的socket地址给ttRPC server，如/var/run/containerd/2a1ba987aebca5dfa3c99d9158ded473538eb5d2e9a320baf5bcf55abb50a308
 	address, err := shim.SocketAddress(ctx, opts.Address, grouping)
-	if err != nil {
-		return "", err
-	}
 
 -	// 打开address，监听socket地址，注意，这时候socket的fd=3
 	socket, err := shim.NewSocket(address)
-	if err != nil {
-		// the only time where this would happen is if there is a bug and the socket
-		// was not cleaned up in the cleanup method of the shim or we are using the
-		// grouping functionality where the new process should be run with the same
-		// shim as an existing container
-		if !shim.SocketEaddrinuse(err) {
-			return "", errors.Wrap(err, "create new shim socket")
-		}
-		if shim.CanConnect(address) {
-			if err := shim.WriteAddress("address", address); err != nil {
-				return "", errors.Wrap(err, "write existing socket for shim")
-			}
-			return address, nil
-		}
-		if err := shim.RemoveSocket(address); err != nil {
-			return "", errors.Wrap(err, "remove pre-existing socket")
-		}
-		if socket, err = shim.NewSocket(address); err != nil {
-			return "", errors.Wrap(err, "try create new shim socket 2x")
-		}
-	}
-	defer func() {
-		if retErr != nil {
-			socket.Close()
-			_ = shim.RemoveSocket(address)
-		}
-	}()
 
+-	// 把address地址写入文件，以便第二次启动时使用
 	// make sure that reexec shim-v2 binary use the value if need
-	if err := shim.WriteAddress("address", address); err != nil {
-		return "", err
-	}
+	shim.WriteAddress("address", address)
 
 	f, err := socket.File()
-	if err != nil {
-		return "", err
-	}
 
 	cmd.ExtraFiles = append(cmd.ExtraFiles, f)
 -	// 启动命令
-	if err := cmd.Start(); err != nil {
-		f.Close()
-		return "", err
-	}
+	cmd.Start()
 	defer func() {
 		if retErr != nil {
 			cmd.Process.Kill()
@@ -566,7 +465,7 @@ func SocketAddress(ctx context.Context, socketPath, id string) (string, error) {
 }
 ```
 
-### Service的实现
+## 3. Service实现
 - ***Create***
 ```diff
 // Create a new initial process and container with the underlying OCI runtime
@@ -907,17 +806,11 @@ func (r *Runc) Create(context context.Context, id, bundle string, opts *CreateOp
 // Start a process
 func (s *service) Start(ctx context.Context, r *taskAPI.StartRequest) (*taskAPI.StartResponse, error) {
 +	container, err := s.getContainer(r.ID)
-	if err != nil {
-		return nil, err
-	}
 
 	// hold the send lock so that the start events are sent before any exit events in the error case
 	s.eventSendMu.Lock()
 +	p, err := container.Start(ctx, r)
-	if err != nil {
-		s.eventSendMu.Unlock()
-		return nil, errdefs.ToGRPC(err)
-	}
+
 
 	switch r.ExecID {
 	case "":
