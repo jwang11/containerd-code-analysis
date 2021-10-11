@@ -167,7 +167,7 @@ func (m *TaskManager) ID() string {
 - // 在runtime里真正创建一个container
 // Create a new task
 func (m *TaskManager) Create(ctx context.Context, id string, opts runtime.CreateOpts) (_ runtime.Task, retErr error) {
--	// 准备rootfs目录，同时写入spec文件
+-	// 准备新的rootfs目录，同时写入spec文件
 	bundle, err := NewBundle(ctx, m.root, m.state, id, opts.Spec.Value)
 +	shim, err := m.startShim(ctx, bundle, id, opts)
 +	t, err := shim.Create(ctx, opts)
@@ -299,9 +299,6 @@ func (m *TaskManager) Tasks(ctx context.Context, all bool) ([]runtime.Task, erro
 
 func (m *TaskManager) loadExistingTasks(ctx context.Context) error {
 	nsDirs, err := ioutil.ReadDir(m.state)
-	if err != nil {
-		return err
-	}
 	for _, nsd := range nsDirs {
 		if !nsd.IsDir() {
 			continue
@@ -337,18 +334,10 @@ func (m *TaskManager) loadTasks(ctx context.Context) error {
 			continue
 		}
 		bundle, err := LoadBundle(ctx, m.state, id)
-		if err != nil {
-			// fine to return error here, it is a programmer error if the context
-			// does not have a namespace
-			return err
-		}
+
 		// fast path
 		bf, err := ioutil.ReadDir(bundle.Path)
-		if err != nil {
-			bundle.Delete()
-			log.G(ctx).WithError(err).Errorf("fast path read bundle path for %s", bundle.Path)
-			continue
-		}
+
 		if len(bf) == 0 {
 			bundle.Delete()
 			continue
@@ -410,6 +399,8 @@ func (c *taskClient) Start(ctx context.Context, req *StartRequest) (*StartRespon
 ```
 
 ### 2.4 Shim
+
+Shim包含了bundle和task client
 ```diff
 type shim struct {
 	bundle *Bundle
@@ -457,11 +448,9 @@ func (s *shim) Create(ctx context.Context, opts runtime.CreateOpts) (runtime.Tas
 
 
 func (s *shim) Pause(ctx context.Context) error {
-	if _, err := s.task.Pause(ctx, &task.PauseRequest{
+	s.task.Pause(ctx, &task.PauseRequest{
 		ID: s.ID(),
-	}); err != nil {
-		return errdefs.FromGRPC(err)
-	}
+	})
 	return nil
 }
 
