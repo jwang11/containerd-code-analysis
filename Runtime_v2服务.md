@@ -39,6 +39,16 @@ func init() {
 	})
 }
 
+// NewContainerStore returns a Store backed by an underlying bolt DB
+func NewContainerStore(db *DB) containers.Store {
+	return &containerStore{	
++		db: db,	// metadata.DB
+	}
+}
+type containerStore struct {
+	db *DB
+}
+
 // New task manager for v2 shims
 func New(ctx context.Context, root, state, containerdAddress, containerdTTRPCAddress string, events *exchange.Exchange, cs containers.Store) (*TaskManager, error) {
 	for _, d := range []string{root, state} {
@@ -70,15 +80,7 @@ type TaskList struct {
 	tasks map[string]map[string]Task
 }
 
-// NewContainerStore returns a Store backed by an underlying bolt DB
-func NewContainerStore(db *DB) containers.Store {
-	return &containerStore{	
-+		db: db,	// metadata.DB
-	}
-}
-type containerStore struct {
-	db *DB
-}
+
 ```
 
 ### 1.2 TaskList
@@ -166,8 +168,8 @@ func (m *TaskManager) ID() string {
 // Create a new task
 func (m *TaskManager) Create(ctx context.Context, id string, opts runtime.CreateOpts) (_ runtime.Task, retErr error) {
 	bundle, err := NewBundle(ctx, m.root, m.state, id, opts.Spec.Value)
-	shim, err := m.startShim(ctx, bundle, id, opts)
-	t, err := shim.Create(ctx, opts)
++	shim, err := m.startShim(ctx, bundle, id, opts)
++	t, err := shim.Create(ctx, opts)
 	m.tasks.Add(ctx, t)
 	return t, nil
 }
@@ -216,13 +218,10 @@ type binary struct {
 
 func (b *binary) Start(ctx context.Context, opts *types.Any, onClose func()) (_ *shim, err error) {
 	args := []string{"-id", b.bundle.ID}
-	switch logrus.GetLevel() {
-	case logrus.DebugLevel, logrus.TraceLevel:
-		args = append(args, "-debug")
-	}
 -	// 注意，启动shim的时候，有start参数，用处在分析shim的时候讲
 	args = append(args, "start")
 
+-	// 构建shim的命令
 	cmd, err := client.Command(
 		ctx,
 		b.runtime,
@@ -236,6 +235,7 @@ func (b *binary) Start(ctx context.Context, opts *types.Any, onClose func()) (_ 
 	ns, _ := namespaces.Namespace(ctx)
 	shimCtx, cancelShimLog := context.WithCancel(namespaces.WithNamespace(context.Background(), ns))
 
+-	// 使用fifo文件/var/run/containerd/io.containerd.runtime.v2.task/default/$ID/log来输出shim的log
 	f, err := openShimLog(shimCtx, b.bundle, client.AnonDialer)
 
 	// open the log pipe and block until the writer is ready
@@ -248,13 +248,12 @@ func (b *binary) Start(ctx context.Context, opts *types.Any, onClose func()) (_ 
 		// should be reset, like os.ErrClosed or os.ErrNotExist, which
 		// depends on platform.
 		err = checkCopyShimLogError(ctx, err)
-		if err != nil {
-			log.G(ctx).WithError(err).Error("copy shim log")
-		}
 	}()
+-	// 执行命令	
 	out, err := cmd.CombinedOutput()
-
+-	// shim打印address地址
 	address := strings.TrimSpace(string(out))
+-	// 连接address地址	
 	conn, err := client.Connect(address, client.AnonDialer)
 
 	onCloseWithShimLog := func() {
@@ -262,12 +261,19 @@ func (b *binary) Start(ctx context.Context, opts *types.Any, onClose func()) (_ 
 		cancelShimLog()
 		f.Close()
 	}
+-	// 建立ttRPC client	
 	client := ttrpc.NewClient(conn, ttrpc.WithOnClose(onCloseWithShimLog))
-	return &shim{
++	return &shim{
 		bundle: b.bundle,
 		client: client,
-		task:   task.NewTaskClient(client),
++		task:   task.NewTaskClient(client),
 	}, nil
+}
+
+func NewTaskClient(client *github_com_containerd_ttrpc.Client) TaskService {
+	return &taskClient{
+		client: client,
+	}
 }
 ```
 - ***Get***和***Add***
@@ -373,5 +379,158 @@ func (m *TaskManager) loadTasks(ctx context.Context) error {
 func (m *TaskManager) container(ctx context.Context, id string) (*containers.Container, error) {
 	container, err := m.containers.Get(ctx, id)
 	return &container, nil
+}
+```
+
+### 2.3 Task Client
+负责和Shim进程通信
+```diff
+type taskClient struct {
+	client *github_com_containerd_ttrpc.Client
+}
+
+func (c *taskClient) State(ctx context.Context, req *StateRequest) (*StateResponse, error) {
+	var resp StateResponse
++	c.client.Call(ctx, "containerd.task.v2.Task", "State", req, &resp)
+	return &resp, nil
+}
+
+func (c *taskClient) Create(ctx context.Context, req *CreateTaskRequest) (*CreateTaskResponse, error) {
+	var resp CreateTaskResponse
++	c.client.Call(ctx, "containerd.task.v2.Task", "Create", req, &resp)
+	return &resp, nil
+}
+
+func (c *taskClient) Start(ctx context.Context, req *StartRequest) (*StartResponse, error) {
+	var resp StartResponse
++	c.client.Call(ctx, "containerd.task.v2.Task", "Start", req, &resp)
+	return &resp, nil
+}
+```
+
+### 2.4 Shim
+```diff
+type shim struct {
+	bundle *Bundle
+	client *ttrpc.Client
+	task   task.TaskService
+}
+// ID of the shim/task
+func (s *shim) ID() string {
+	return s.bundle.ID
+}
+
+// PID of the task
+func (s *shim) PID(ctx context.Context) (uint32, error) {
+	response, err := s.task.Connect(ctx, &task.ConnectRequest{
+		ID: s.ID(),
+	})
+	return response.TaskPid, nil
+}
+
+func (s *shim) Create(ctx context.Context, opts runtime.CreateOpts) (runtime.Task, error) {
+	topts := opts.TaskOptions
+	if topts == nil {
+		topts = opts.RuntimeOptions
+	}
+	request := &task.CreateTaskRequest{
+		ID:         s.ID(),
+		Bundle:     s.bundle.Path,
+		Stdin:      opts.IO.Stdin,
+		Stdout:     opts.IO.Stdout,
+		Stderr:     opts.IO.Stderr,
+		Terminal:   opts.IO.Terminal,
+		Checkpoint: opts.Checkpoint,
+		Options:    topts,
+	}
+	for _, m := range opts.Rootfs {
+		request.Rootfs = append(request.Rootfs, &types.Mount{
+			Type:    m.Type,
+			Source:  m.Source,
+			Options: m.Options,
+		})
+	}
+	_, err := s.task.Create(ctx, request)
+	return s, nil
+}
+
+
+func (s *shim) Pause(ctx context.Context) error {
+	if _, err := s.task.Pause(ctx, &task.PauseRequest{
+		ID: s.ID(),
+	}); err != nil {
+		return errdefs.FromGRPC(err)
+	}
+	return nil
+}
+
+func (s *shim) Resume(ctx context.Context) error {
+	s.task.Resume(ctx, &task.ResumeRequest{
+		ID: s.ID(),
+	})
+	return nil
+}
+
+func (s *shim) Start(ctx context.Context) error {
+	_, err := s.task.Start(ctx, &task.StartRequest{
+		ID: s.ID(),
+	})
+	return nil
+}
+
+func (s *shim) Kill(ctx context.Context, signal uint32, all bool) error {
+	s.task.Kill(ctx, &task.KillRequest{
+		ID:     s.ID(),
+		Signal: signal,
+		All:    all,
+	})
+	return nil
+}
+
+func (s *shim) Exec(ctx context.Context, id string, opts runtime.ExecOpts) (runtime.ExecProcess, error) {
+	if err := identifiers.Validate(id); err != nil {
+		return nil, errors.Wrapf(err, "invalid exec id %s", id)
+	}
+	request := &task.ExecProcessRequest{
+		ID:       s.ID(),
+		ExecID:   id,
+		Stdin:    opts.IO.Stdin,
+		Stdout:   opts.IO.Stdout,
+		Stderr:   opts.IO.Stderr,
+		Terminal: opts.IO.Terminal,
+		Spec:     opts.Spec,
+	}
+	s.task.Exec(ctx, request)
+	return &process{
+		id:   id,
+		shim: s,
+	}, nil
+}
+
+func (s *shim) Pids(ctx context.Context) ([]runtime.ProcessInfo, error) {
+	resp, err := s.task.Pids(ctx, &task.PidsRequest{
+		ID: s.ID(),
+	})
+
+	var processList []runtime.ProcessInfo
+	for _, p := range resp.Processes {
+		processList = append(processList, runtime.ProcessInfo{
+			Pid:  p.Pid,
+			Info: p.Info,
+		})
+	}
+	return processList, nil
+}
+
+func (s *shim) Wait(ctx context.Context) (*runtime.Exit, error) {
+	taskPid, err := s.PID(ctx)
+	response, err := s.task.Wait(ctx, &task.WaitRequest{
+		ID: s.ID(),
+	})
+	return &runtime.Exit{
+		Pid:       taskPid,
+		Timestamp: response.ExitedAt,
+		Status:    response.ExitStatus,
+	}, nil
 }
 ```
