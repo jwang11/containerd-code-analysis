@@ -310,7 +310,7 @@ type Shim interface {
 - ***startShim***生成新的Shim进程,目的是脱离containerd，成为独立的Daemon
 ```diff
 func (s *service) StartShim(ctx context.Context, opts shim.StartOpts) (_ string, retErr error) {
-	cmd, err := newCommand(ctx, opts.ID, opts.ContainerdBinary, opts.Address, opts.TTRPCAddress)
++	cmd, err := newCommand(ctx, opts.ID, opts.ContainerdBinary, opts.Address, opts.TTRPCAddress)
 	grouping := opts.ID
 	spec, err := readSpec()
 	for _, group := range groupLabels {
@@ -367,8 +367,9 @@ func (s *service) StartShim(ctx context.Context, opts shim.StartOpts) (_ string,
 	return address, nil
 }
 ```
->> ***newCommand***，***SocketAddress***
+> ***newCommand***
 ```diff
+- // 生成shim再次启动的命令
 func newCommand(ctx context.Context, id, containerdBinary, containerdAddress, containerdTTRPCAddress string) (*exec.Cmd, error) {
 	ns, err := namespaces.NamespaceRequired(ctx)
 	self, err := os.Executable()
@@ -425,8 +426,8 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 	}, nil
 }
 ```
->> ***runc.NewContainer(ctx, s.platform, r)***
-生成将会和runc container及process交互的Contaienr对象
+> ***runc.NewContainer***
+生成将会和runc container及process交互的Container对象
 ```diff
 // NewContainer returns a new runc container
 func NewContainer(ctx context.Context, platform stdio.Platform, r *task.CreateTaskRequest) (_ *Container, retErr error) {
@@ -485,7 +486,7 @@ func NewContainer(ctx context.Context, platform stdio.Platform, r *task.CreateTa
 	}
 
 -	// 创建Process对象，代表container里的process
-	p, err := newInit(
++	p, err := newInit(
 		ctx,
 		r.Bundle,
 		filepath.Join(r.Bundle, "work"),
@@ -496,11 +497,12 @@ func NewContainer(ctx context.Context, platform stdio.Platform, r *task.CreateTa
 		rootfs,
 	)
 
--	// p是Init,运行Init.Create
-	p.Create(ctx, config)
+-	// p是Init,运行Init.Create启动$runc create
++	p.Create(ctx, config)
 	container := &Container{
 		ID:              r.ID,
 		Bundle:          r.Bundle,
+-		// init存入process		
 		process:         p,
 		processes:       make(map[string]process.Process),
 		reservedProcess: make(map[string]struct{}),
@@ -520,7 +522,7 @@ func NewContainer(ctx context.Context, platform stdio.Platform, r *task.CreateTa
 	return container, nil
 }
 ```
->>> ***newInit***
+>> ***newInit***
 ```diff
 func newInit(ctx context.Context, path, workDir, namespace string, platform stdio.Platform,
 	r *process.CreateConfig, options *options.Options, rootfs string) (*process.Init, error) {
@@ -564,7 +566,7 @@ func New(id string, runtime *runc.Runc, stdio stdio.Stdio) *Init {
 }
 ```
 
->>> ***p.Create(ctx, config)***
+>> ***p.Create(ctx, config)***
 ```diff
 // Create the process with the provided config
 func (p *Init) Create(ctx context.Context, r *CreateConfig) error {
@@ -619,7 +621,7 @@ func (p *Init) Create(ctx context.Context, r *CreateConfig) error {
 }
 ```
 
->>>> ***p.runtime.Create()***
+>>> ***p.runtime.Create()***
 ```diff
 // Create creates a new container and returns its pid if it was created successfully
 func (r *Runc) Create(context context.Context, id, bundle string, opts *CreateOpts) error {
