@@ -321,6 +321,8 @@ func writeImage(bkt *bolt.Bucket, image *images.Image) error {
 		{bucketKeyDigest, []byte(image.Target.Digest)},
 		{bucketKeyMediaType, []byte(image.Target.MediaType)},
 		{bucketKeySize, sizeEncoded},
+	} {
+		tbkt.Put(v[0], v[1])
 	}
 	return nil
 }
