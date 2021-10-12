@@ -256,7 +256,7 @@ func New(ctx context.Context, id string, publisher shim.Publisher, shutdown func
 	}
 
 	go ep.Run(ctx)
--	// 既实现了shim.Shim接口，也实现了taskService接口
+-	// 既实现了shim.Shim接口，也实现了ttPRC的TaskService接口
 	s := &service{
 		id:         id,
 		context:    ctx,
@@ -266,10 +266,12 @@ func New(ctx context.Context, id string, publisher shim.Publisher, shutdown func
 		cancel:     shutdown,
 		containers: make(map[string]*runc.Container),
 	}
+-	// 监视并处理容器的exit	
 	go s.processExits()
 	runcC.Monitor = reaper.Default
-+	s.initPlatform()
-+	go s.forward(ctx, publisher)
+-	// 初始化epoll管理console	
+	s.initPlatform()
+	go s.forward(ctx, publisher)
 
 	if address, err := shim.ReadAddress("address"); err == nil {
 		s.shimAddress = address
@@ -305,25 +307,7 @@ type Shim interface {
 ```
 
 ### 2.2 接口实现
-- ***shim_runc service***实现
-```diff
-// initialize a single epoll fd to manage our consoles. `initPlatform` should
-// only be called once.
-func (s *service) initPlatform() error {
-+	p, err := runc.NewPlatform()
-	s.platform = p
-	return nil
-}
-
-func NewPlatform() (stdio.Platform, error) {
-	epoller, err := console.NewEpoller()
-	go epoller.Wait()
-	return &linuxPlatform{
-		epoller: epoller,
-	}, nil
-}
-```
-- ***startShim***生成新的Shim进程
+- ***startShim***生成新的Shim进程,目的是脱离containerd，成为独立的Daemon
 ```diff
 func (s *service) StartShim(ctx context.Context, opts shim.StartOpts) (_ string, retErr error) {
 	cmd, err := newCommand(ctx, opts.ID, opts.ContainerdBinary, opts.Address, opts.TTRPCAddress)
@@ -360,33 +344,18 @@ func (s *service) StartShim(ctx context.Context, opts shim.StartOpts) (_ string,
 	if data, err := ioutil.ReadAll(os.Stdin); err == nil {
 		if len(data) > 0 {
 			var any ptypes.Any
-			if err := proto.Unmarshal(data, &any); err != nil {
-				return "", err
-			}
-			v, err := typeurl.UnmarshalAny(&any)
-			if err != nil {
-				return "", err
-			}
+			proto.Unmarshal(data, &any)
+			typeurl.UnmarshalAny(&any)
 			if opts, ok := v.(*options.Options); ok {
 				if opts.ShimCgroup != "" {
 					if cgroups.Mode() == cgroups.Unified {
 						cg, err := cgroupsv2.LoadManager("/sys/fs/cgroup", opts.ShimCgroup)
-						if err != nil {
-							return "", errors.Wrapf(err, "failed to load cgroup %s", opts.ShimCgroup)
-						}
-						if err := cg.AddProc(uint64(cmd.Process.Pid)); err != nil {
-							return "", errors.Wrapf(err, "failed to join cgroup %s", opts.ShimCgroup)
-						}
+						cg.AddProc(uint64(cmd.Process.Pid))
 					} else {
 						cg, err := cgroups.Load(cgroups.V1, cgroups.StaticPath(opts.ShimCgroup))
-						if err != nil {
-							return "", errors.Wrapf(err, "failed to load cgroup %s", opts.ShimCgroup)
-						}
-						if err := cg.Add(cgroups.Process{
+						cg.Add(cgroups.Process{
 							Pid: cmd.Process.Pid,
-						}); err != nil {
-							return "", errors.Wrapf(err, "failed to join cgroup %s", opts.ShimCgroup)
-						}
+						})
 					}
 				}
 			}
@@ -420,6 +389,7 @@ func newCommand(ctx context.Context, id, containerdBinary, containerdAddress, co
 
 const socketRoot = defaults.DefaultStateDir
 
+- // 计算新的ttRPC address
 // SocketAddress returns a socket address
 func SocketAddress(ctx context.Context, socketPath, id string) (string, error) {
 	ns, err := namespaces.NamespaceRequired(ctx)
@@ -456,6 +426,7 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 }
 ```
 >> ***runc.NewContainer(ctx, s.platform, r)***
+生成将会和runc container及process交互的Contaienr对象
 ```diff
 // NewContainer returns a new runc container
 func NewContainer(ctx context.Context, platform stdio.Platform, r *task.CreateTaskRequest) (_ *Container, retErr error) {
@@ -553,7 +524,8 @@ func NewContainer(ctx context.Context, platform stdio.Platform, r *task.CreateTa
 ```diff
 func newInit(ctx context.Context, path, workDir, namespace string, platform stdio.Platform,
 	r *process.CreateConfig, options *options.Options, rootfs string) (*process.Init, error) {
-+	runtime := process.NewRunc(options.Root, path, namespace, options.BinaryName, options.CriuPath, options.SystemdCgroup)
+-	// 生成go-runc包里的Runc	
+	runtime := process.NewRunc(options.Root, path, namespace, options.BinaryName, options.CriuPath, options.SystemdCgroup)
 +	p := process.New(r.ID, runtime, stdio.Stdio{
 		Stdin:    r.Stdin,
 		Stdout:   r.Stdout,
@@ -576,22 +548,7 @@ func newInit(ctx context.Context, path, workDir, namespace string, platform stdi
 	return p, nil
 }
 
-// NewRunc returns a new runc instance for a process
-func NewRunc(root, path, namespace, runtime, criu string, systemd bool) *runc.Runc {
-	if root == "" {
-		root = RuncRoot
-	}
-	return &runc.Runc{
-		Command:       runtime,
-		Log:           filepath.Join(path, "log.json"),
-		LogFormat:     runc.JSON,
-		PdeathSignal:  unix.SIGKILL,
-		Root:          filepath.Join(root, namespace),
-		Criu:          criu,
-		SystemdCgroup: systemd,
-	}
-}
-
+- // process.New
 // New returns a new process
 func New(id string, runtime *runc.Runc, stdio stdio.Stdio) *Init {
 	p := &Init{
@@ -622,9 +579,7 @@ func (p *Init) Create(ctx context.Context, r *CreateConfig) error {
 		socket, err = runc.NewTempConsoleSocket()
 		defer socket.Close()
 	} else {
-		if pio, err = createIO(ctx, p.id, p.IoUID, p.IoGID, p.stdio); err != nil {
-			return errors.Wrap(err, "failed to create init process I/O")
-		}
+		createIO(ctx, p.id, p.IoUID, p.IoGID, p.stdio)
 		p.io = pio
 	}
 	if r.Checkpoint != "" {
@@ -643,9 +598,7 @@ func (p *Init) Create(ctx context.Context, r *CreateConfig) error {
 		opts.ConsoleSocket = socket
 	}
 -	// p.runtime是runc.Runc	
-	if err := p.runtime.Create(ctx, r.ID, r.Bundle, opts); err != nil {
-		return p.runtimeError(err, "OCI runtime create failed")
-	}
+	p.runtime.Create(ctx, r.ID, r.Bundle, opts)
 	if r.Stdin != "" {
 		p.openStdin(r.Stdin)
 	}
@@ -844,3 +797,323 @@ func (r *Runc) Start(context context.Context, id string) error {
 }
 ```
 
+### 2.3 runc.Container
+```diff
+// Container for operating on a runc container and its processes
+type Container struct {
+	mu sync.Mutex
+
+	// ID of the container
+	ID string
+	// Bundle path
+	Bundle string
+
+	// cgroup is either cgroups.Cgroup or *cgroupsv2.Manager
+	cgroup          interface{}
+	process         process.Process
+	processes       map[string]process.Process
+	reservedProcess map[string]struct{}
+}
+
+// All processes in the container
+func (c *Container) All() (o []process.Process) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	for _, p := range c.processes {
+		o = append(o, p)
+	}
+	if c.process != nil {
+		o = append(o, c.process)
+	}
+	return o
+}
+
+// ExecdProcesses added to the container
+func (c *Container) ExecdProcesses() (o []process.Process) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, p := range c.processes {
+		o = append(o, p)
+	}
+	return o
+}
+
+// Pid of the main process of a container
+func (c *Container) Pid() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.process.Pid()
+}
+
+// Cgroup of the container
+func (c *Container) Cgroup() interface{} {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.cgroup
+}
+
+// CgroupSet sets the cgroup to the container
+func (c *Container) CgroupSet(cg interface{}) {
+	c.mu.Lock()
+	c.cgroup = cg
+	c.mu.Unlock()
+}
+
+// Process returns the process by id
+func (c *Container) Process(id string) (process.Process, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if id == "" {
+		if c.process == nil {
+			return nil, errors.Wrapf(errdefs.ErrFailedPrecondition, "container must be created")
+		}
+		return c.process, nil
+	}
+	p, ok := c.processes[id]
+	return p, nil
+}
+
+// ProcessAdd adds a new process to the container
+func (c *Container) ProcessAdd(process process.Process) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	delete(c.reservedProcess, process.ID())
+	c.processes[process.ID()] = process
+}
+
+// Start a container process
+func (c *Container) Start(ctx context.Context, r *task.StartRequest) (process.Process, error) {
+	p, err := c.Process(r.ExecID)
+	p.Start(ctx)
+	if c.Cgroup() == nil && p.Pid() > 0 {
+		var cg interface{}
+		if cgroups.Mode() == cgroups.Unified {
+			g, err := cgroupsv2.PidGroupPath(p.Pid())
+			if err != nil {
+				logrus.WithError(err).Errorf("loading cgroup2 for %d", p.Pid())
+			}
+			cg, err = cgroupsv2.LoadManager("/sys/fs/cgroup", g)
+			if err != nil {
+				logrus.WithError(err).Errorf("loading cgroup2 for %d", p.Pid())
+			}
+		} else {
+			cg, err = cgroups.Load(cgroups.V1, cgroups.PidPath(p.Pid()))
+			if err != nil {
+				logrus.WithError(err).Errorf("loading cgroup for %d", p.Pid())
+			}
+		}
+		c.cgroup = cg
+	}
+	return p, nil
+}
+
+// Exec an additional process
+func (c *Container) Exec(ctx context.Context, r *task.ExecProcessRequest) (process.Process, error) {
+	process, err := c.process.(*process.Init).Exec(ctx, c.Bundle, &process.ExecConfig{
+		ID:       r.ExecID,
+		Terminal: r.Terminal,
+		Stdin:    r.Stdin,
+		Stdout:   r.Stdout,
+		Stderr:   r.Stderr,
+		Spec:     r.Spec,
+	})
+	c.ProcessAdd(process)
+	return process, nil
+}
+
+// Pause the container
+func (c *Container) Pause(ctx context.Context) error {
+	return c.process.(*process.Init).Pause(ctx)
+}
+```
+
+### 2.4 process.Init
+实现了runc.Process接口
+```diff
+// Init represents an initial process for a container
+type Init struct {
+	wg        sync.WaitGroup
+	initState initState
+
+	// mu is used to ensure that `Start()` and `Exited()` calls return in
+	// the right order when invoked in separate go routines.
+	// This is the case within the shim implementation as it makes use of
+	// the reaper interface.
+	mu sync.Mutex
+
+	waitBlock chan struct{}
+
+	WorkDir string
+
+	id       string
+	Bundle   string
+	console  console.Console
+	Platform stdio.Platform
+	io       *processIO
+	runtime  *runc.Runc
+	// pausing preserves the pausing state.
+	pausing      *atomicBool
+	status       int
+	exited       time.Time
+	pid          int
+	closers      []io.Closer
+	stdin        io.Closer
+	stdio        stdio.Stdio
+	Rootfs       string
+	IoUID        int
+	IoGID        int
+	NoPivotRoot  bool
+	NoNewKeyring bool
+	CriuWorkPath string
+}
+
+// Create the process with the provided config
+func (p *Init) Create(ctx context.Context, r *CreateConfig) error {
+	var (
+		err     error
+		socket  *runc.Socket
+		pio     *processIO
+		pidFile = newPidFile(p.Bundle)
+	)
+
+	if r.Terminal {
+		runc.NewTempConsoleSocket()
+		defer socket.Close()
+	} else {
+		createIO(ctx, p.id, p.IoUID, p.IoGID, p.stdio)
+		p.io = pio
+	}
+	if r.Checkpoint != "" {
+		return p.createCheckpointedState(r, pidFile)
+	}
+	opts := &runc.CreateOpts{
+		PidFile:      pidFile.Path(),
+		NoPivot:      p.NoPivotRoot,
+		NoNewKeyring: p.NoNewKeyring,
+	}
+	if p.io != nil {
+		opts.IO = p.io.IO()
+	}
+	if socket != nil {
+		opts.ConsoleSocket = socket
+	}
+	if err := p.runtime.Create(ctx, r.ID, r.Bundle, opts); err != nil {
+		return p.runtimeError(err, "OCI runtime create failed")
+	}
+	if r.Stdin != "" {
+		if err := p.openStdin(r.Stdin); err != nil {
+			return err
+		}
+	}
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	if socket != nil {
+		console, err := socket.ReceiveMaster()
+		console, err = p.Platform.CopyConsole(ctx, console, p.id, r.Stdin, r.Stdout, r.Stderr, &p.wg)
+
+		p.console = console
+	} else {
+		pio.Copy(ctx, &p.wg)
+	}
+	pid, err := pidFile.Read()
+	p.pid = pid
+	return nil
+}
+
+// Wait for the process to exit
+func (p *Init) Wait() {
+	<-p.waitBlock
+}
+
+// ID of the process
+func (p *Init) ID() string {
+	return p.id
+}
+
+// Pid of the process
+func (p *Init) Pid() int {
+	return p.pid
+}
+
+// ExitStatus of the process
+func (p *Init) ExitStatus() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	return p.status
+}
+
+// ExitedAt at time when the process exited
+func (p *Init) ExitedAt() time.Time {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	return p.exited
+}
+
+// Status of the process
+func (p *Init) Status(ctx context.Context) (string, error) {
+	if p.pausing.get() {
+		return "pausing", nil
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	return p.initState.Status(ctx)
+}
+
+// Runtime returns the OCI runtime configured for the init process
+func (p *Init) Runtime() *runc.Runc {
+	return p.runtime
+}
+
+// Exec returns a new child process
+func (p *Init) Exec(ctx context.Context, path string, r *ExecConfig) (Process, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	return p.initState.Exec(ctx, path, r)
+}
+
+// exec returns a new exec'd process
+func (p *Init) exec(ctx context.Context, path string, r *ExecConfig) (Process, error) {
+	// process exec request
+	var spec specs.Process
+	if err := json.Unmarshal(r.Spec.Value, &spec); err != nil {
+		return nil, err
+	}
+	spec.Terminal = r.Terminal
+
+	e := &execProcess{
+		id:     r.ID,
+		path:   path,
+		parent: p,
+		spec:   spec,
+		stdio: stdio.Stdio{
+			Stdin:    r.Stdin,
+			Stdout:   r.Stdout,
+			Stderr:   r.Stderr,
+			Terminal: r.Terminal,
+		},
+		waitBlock: make(chan struct{}),
+	}
+	e.execState = &execCreatedState{p: e}
+	return e, nil
+}
+
+// Start the init process
+func (p *Init) Start(ctx context.Context) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	return p.initState.Start(ctx)
+}
+
+func (p *Init) start(ctx context.Context) error {
+	err := p.runtime.Start(ctx, p.id)
+	return p.runtimeError(err, "OCI runtime start failed")
+}
+```
