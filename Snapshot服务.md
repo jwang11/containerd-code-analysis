@@ -463,6 +463,7 @@ func (o *snapshotter) createSnapshot(ctx context.Context, kind snapshots.Kind, k
 	rollback = false
 -	// bolt库内容提交	
 	t.Commit()
+-	// $mount -t overlay overlay -o lowerdir={parentt_dir},upperdir={active_dir},workdir=work fs	
 +	return o.mounts(s), nil
 }
 
