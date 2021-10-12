@@ -35,18 +35,9 @@ func init() {
 		},
 		InitFn: func(ic *plugin.InitContext) (interface{}, error) {
 			plugins, err := ic.GetByType(plugin.ServicePlugin)
-			if err != nil {
-				return nil, err
-			}
 -			// 依赖内部服务services.ContainersService			
 			p, ok := plugins[services.ContainersService]
-			if !ok {
-				return nil, errors.New("containers service not found")
-			}
 			i, err := p.Instance()
-			if err != nil {
-				return nil, err
-			}
 +			return &service{local: i.(api.ContainersClient)}, nil
 		},
 	})
@@ -76,24 +67,13 @@ func (s *service) List(ctx context.Context, req *api.ListContainersRequest) (*ap
 
 func (s *service) ListStream(req *api.ListContainersRequest, stream api.Containers_ListStreamServer) error {
 +	containers, err := s.local.ListStream(stream.Context(), req)
-	if err != nil {
-		return err
-	}
 	for {
 		select {
 		case <-stream.Context().Done():
 			return nil
 		default:
 			c, err := containers.Recv()
-			if err != nil {
-				if err == io.EOF {
-					return nil
-				}
-				return err
-			}
-			if err := stream.Send(c); err != nil {
-				return err
-			}
+			stream.Send(c)
 		}
 	}
 }
@@ -125,13 +105,7 @@ func init() {
 		InitFn: func(ic *plugin.InitContext) (interface{}, error) {
 -			// 依赖底层服务MetadataPlugin
 			m, err := ic.Get(plugin.MetadataPlugin)
-			if err != nil {
-				return nil, err
-			}
 			ep, err := ic.Get(plugin.EventPlugin)
-			if err != nil {
-				return nil, err
-			}
 
 +			db := m.(*metadata.DB)
 			return &local{
@@ -192,7 +166,6 @@ func (l *local) Create(ctx context.Context, req *api.CreateContainerRequest, _ .
 	if err := l.withStoreUpdate(ctx, func(ctx context.Context) error {
 		container := containerFromProto(&req.Container)
 		created, err := l.Store.Create(ctx, container)
-
 		resp.Container = containerToProto(&created)
 
 		return nil
@@ -223,7 +196,6 @@ func (l *local) Update(ctx context.Context, req *api.UpdateContainerRequest, _ .
 		}
 
 		updated, err := l.Store.Update(ctx, container, fieldpaths...)
-
 		resp.Container = containerToProto(&updated)
 		return nil
 	})
@@ -236,18 +208,6 @@ func (l *local) Update(ctx context.Context, req *api.UpdateContainerRequest, _ .
 	})
 
 	return &resp, nil
-}
-
-func (l *local) Delete(ctx context.Context, req *api.DeleteContainerRequest, _ ...grpc.CallOption) (*ptypes.Empty, error) {
-	if err := l.withStoreUpdate(ctx, func(ctx context.Context) error {
-		return l.Store.Delete(ctx, req.ID)
-	})
-
-	if err := l.publisher.Publish(ctx, "/containers/delete", &eventstypes.ContainerDelete{
-		ID: req.ID,
-	})
-
-	return &ptypes.Empty{}, nil
 }
 
 func (l *local) withStore(ctx context.Context, fn func(ctx context.Context) error) func(tx *bolt.Tx) error {
@@ -307,7 +267,7 @@ func (s *containerStore) Get(ctx context.Context, id string) (containers.Contain
 
 	if err := view(ctx, s.db, func(tx *bolt.Tx) error {
 		bkt := getContainerBucket(tx, namespace, id)
-		if err := readContainer(&container, bkt); err != nil {}
+		readContainer(&container, bkt)
 		return nil
 	})
 	return container, nil
@@ -327,7 +287,7 @@ func (s *containerStore) List(ctx context.Context, fs ...string) ([]containers.C
 		return bkt.ForEach(func(k, v []byte) error {
 			cbkt := bkt.Bucket(k)
 			container := containers.Container{ID: string(k)}
-+			if err := readContainer(&container, cbkt); err != nil {}
++			readContainer(&container, cbkt)
 			if filter.Match(adaptContainer(container)) {
 				m = append(m, container)
 			}
@@ -352,7 +312,7 @@ func (s *containerStore) Create(ctx context.Context, container containers.Contai
 
 		container.CreatedAt = time.Now().UTC()
 		container.UpdatedAt = container.CreatedAt
-+		if err := writeContainer(cbkt, &container); err != nil {}
++		writeContainer(cbkt, &container)
 
 		return nil
 	})
@@ -368,13 +328,9 @@ func (s *containerStore) Update(ctx context.Context, container containers.Contai
 	var updated containers.Container
 	if err := update(ctx, s.db, func(tx *bolt.Tx) error {
 		bkt := getContainersBucket(tx, namespace)
-		if bkt == nil {
-			return errors.Wrapf(errdefs.ErrNotFound, "cannot update container %q in namespace %q", container.ID, namespace)
-		}
-
 		cbkt := bkt.Bucket([]byte(container.ID))
 
-+		if err := readContainer(&updated, cbkt); err != nil {}
++		readContainer(&updated, cbkt)
 		createdat := updated.CreatedAt
 		updated.ID = container.ID
 
@@ -439,19 +395,3 @@ func (s *containerStore) Update(ctx context.Context, container containers.Contai
 }
 ```
 
-- ***Delete***
-```diff
-func (s *containerStore) Delete(ctx context.Context, id string) error {
-	namespace, err := namespaces.NamespaceRequired(ctx)
-	return update(ctx, s.db, func(tx *bolt.Tx) error {
-		bkt := getContainersBucket(tx, namespace)
-		if err := bkt.DeleteBucket([]byte(id)); err != nil {
-			return err
-		}
-
-		atomic.AddUint32(&s.db.dirty, 1)
-		return nil
-	})
-}
-
-```
