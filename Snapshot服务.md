@@ -100,21 +100,10 @@ func (s *service) Commit(ctx context.Context, cr *snapshotsapi.CommitSnapshotReq
 	if cr.Labels != nil {
 		opts = append(opts, snapshots.WithLabels(cr.Labels))
 	}	
-+	if err := sn.Commit(ctx, cr.Name, cr.Key, opts...); err != nil {}
++	sn.Commit(ctx, cr.Name, cr.Key, opts...)
 	return empty, nil
 }
 ```
-
-- ***Remove***
-```diff
-func (s *service) Remove(ctx context.Context, rr *snapshotsapi.RemoveSnapshotRequest) (*ptypes.Empty, error) {
-	log.G(ctx).WithField("key", rr.Key).Debugf("remove snapshot")
-+	sn, err := s.getSnapshotter(rr.Snapshotter)
-+	if err := sn.Remove(ctx, rr.Key); err != nil {}
-	return empty, nil
-}
-```
-
 - ***Stat***
 ```diff
 func (s *service) Stat(ctx context.Context, sr *snapshotsapi.StatSnapshotRequest) (*snapshotsapi.StatSnapshotResponse, error) {
@@ -270,10 +259,10 @@ func init() {
 func NewSnapshotter(root string, opts ...Opt) (snapshots.Snapshotter, error) {
 	var config SnapshotterConfig
 	for _, opt := range opts {
-		if err := opt(&config); err != nil {}
+		opt(&config)
 	}
 
-	if err := os.MkdirAll(root, 0700); err != nil {}
+	os.MkdirAll(root, 0700)
 	supportsDType, err := fs.SupportsDType(root)
 +	ms, err := storage.NewMetaStore(filepath.Join(root, "metadata.db"))
 
@@ -463,7 +452,7 @@ func (o *snapshotter) createSnapshot(ctx context.Context, kind snapshots.Kind, k
 	rollback = false
 -	// bolt库内容提交	
 	t.Commit()
--	// $mount -t overlay overlay -o lowerdir={parentt_dir},upperdir={active_dir},workdir=work fs	
+-	// 例如$mount -t overlay overlay -o lowerdir={parentt_dir},upperdir={active_dir},workdir=work fs	
 +	return o.mounts(s), nil
 }
 
@@ -582,7 +571,7 @@ func (o *snapshotter) Commit(ctx context.Context, name, key string, opts ...snap
 	// grab the existing id
 +	id, _, _, err := storage.GetInfo(ctx, key)
 	usage, err := fs.DiskUsage(ctx, o.upperPath(id))
-+	if _, err = storage.CommitActive(ctx, key, name, snapshots.Usage(usage), opts...); err != nil {}
++	storage.CommitActive(ctx, key, name, snapshots.Usage(usage), opts...)
 	return t.Commit()
 }
 ```
@@ -609,7 +598,7 @@ func CommitActive(ctx context.Context, key, name string, usage snapshots.Usage, 
 		sbkt := bkt.Bucket([]byte(key))
 
 		var si snapshots.Info
-		if err := readSnapshot(sbkt, &id, &si); err != nil {}
+		readSnapshot(sbkt, &id, &si)
 
 		si.Kind = snapshots.KindCommitted
 		si.Created = time.Now().UTC()
@@ -618,15 +607,15 @@ func CommitActive(ctx context.Context, key, name string, usage snapshots.Usage, 
 		// Replace labels, do not inherit
 		si.Labels = base.Labels
 
-		if err := putSnapshot(dbkt, id, si); err}
-		if err := putUsage(dbkt, usage); err != nil {}
-		if err := bkt.DeleteBucket([]byte(key)); err != nil {}
+		putSnapshot(dbkt, id, si)
+		putUsage(dbkt, usage)
+		bkt.DeleteBucket([]byte(key))
 		if si.Parent != "" {
 			spbkt := bkt.Bucket([]byte(si.Parent))
 			pid := readID(spbkt)
 
 			// Updates parent back link to use new key
-			if err := pbkt.Put(parentKey(pid, id), []byte(name)); err != nil {}
+			pbkt.Put(parentKey(pid, id), []byte(name))
 		}
 		return nil
 	})
@@ -671,7 +660,7 @@ func WalkInfo(ctx context.Context, fn snapshots.WalkFunc, fs ...string) error {
 					Name: string(k),
 				}
 			)
-			if err := readSnapshot(sbkt, nil, &si); err != nil {}
+			readSnapshot(sbkt, nil, &si)
 			if !filter.Match(adaptSnapshot(si)) {
 				return nil
 			}
