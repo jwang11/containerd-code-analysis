@@ -63,16 +63,10 @@ Most of this is experimental and there are few leaps to make this work.`,
     
 -   		// 创建一个基于gprc的containerd client
 		client, ctx, cancel, err := commands.NewClient(clicontext)
-		if err != nil {
-			return err
-		}
 		defer cancel()
     
 -   		// 生成fetch config    
 		config, err := NewFetchConfig(ctx, clicontext)
-		if err != nil {
-			return err
-		}
     
 -   		// 根据fetech_config，把image ref从repo拉下来，放进content store
 		_, err = Fetch(ctx, client, ref, config)
@@ -153,7 +147,6 @@ func NewFetchConfig(ctx context.Context, clicontext *cli.Context) (*FetchConfig,
 -		// 设置RemoteContext.MaxConcurrentUploadedLayers = max的函数
 		config.RemoteOpts = append(config.RemoteOpts, containerd.WithMaxConcurrentUploadedLayers(mcu))
 	}
-
 	return config, nil
 }
 
@@ -191,13 +184,8 @@ func GetResolver(ctx gocontext.Context, clicontext *cli.Context) (remotes.Resolv
 	if username != "" {
 		if secret == "" {
 			fmt.Printf("Password: ")
-
 			var err error
 			secret, err = passwordPrompt()
-			if err != nil {
-				return nil, err
-			}
-
 			fmt.Print("\n")
 		}
 	} else if rt := clicontext.String("refresh"); rt != "" {
@@ -215,9 +203,7 @@ func GetResolver(ctx gocontext.Context, clicontext *cli.Context) (remotes.Resolv
 		hostOptions.DefaultScheme = "http"
 	}
 	defaultTLS, err := resolverDefaultTLS(clicontext)
-	if err != nil {
-		return nil, err
-	}
+
 	hostOptions.DefaultTLS = defaultTLS
 	if hostDir := clicontext.String("hosts-dir"); hostDir != "" {
 		hostOptions.HostDir = config.HostDirFromRoot(hostDir)
@@ -234,10 +220,10 @@ func GetResolver(ctx gocontext.Context, clicontext *cli.Context) (remotes.Resolv
 	}
 
 -	// 根据hostOptions生成ResolveOptions.Hosts函数
-+	options.Hosts = config.ConfigureHosts(ctx, hostOptions)
+	options.Hosts = config.ConfigureHosts(ctx, hostOptions)
 
 -	// 根据ResolveOptions生成Docker registry的resolver
-+	return docker.NewResolver(options), nil
+	return docker.NewResolver(options), nil
 }
 
 // HostOptions is used to configure registry hosts
@@ -291,15 +277,9 @@ func ConfigureHosts(ctx context.Context, options HostOptions) docker.RegistryHos
 		var hosts []hostConfig
 		if options.HostDir != nil {
 			dir, err := options.HostDir(host)
-			if err != nil && !errdefs.IsNotFound(err) {
-				return nil, err
-			}
 			if dir != "" {
 				log.G(ctx).WithField("dir", dir).Debug("loading host directory")
 				hosts, err = loadHostDir(ctx, dir)
-				if err != nil {
-					return nil, err
-				}
 			}
 		}
 
@@ -563,10 +543,6 @@ func Fetch(ctx context.Context, client *containerd.Client, ref string, config *F
 
 +	img, err := client.Fetch(pctx, ref, opts...)
 	stopProgress()
-	if err != nil {
-		return images.Image{}, err
-	}
-
 	<-progress
 	return img, nil
 }
@@ -581,9 +557,7 @@ func (c *Client) Fetch(ctx context.Context, ref string, opts ...RemoteOpt) (imag
 	fetchCtx := defaultRemoteContext()
 -	// 把RemoteOpt数组里的函数执行一遍，修改client，fetchCtx
 	for _, o := range opts {
-		if err := o(c, fetchCtx); err != nil {
-			return images.Image{}, err
-		}
+		o(c, fetchCtx)
 	}
 
 	if fetchCtx.Unpack {
@@ -608,16 +582,10 @@ func (c *Client) Fetch(ctx context.Context, ref string, opts ...RemoteOpt) (imag
 	}
 
 	ctx, done, err := c.WithLease(ctx)
-	if err != nil {
-		return images.Image{}, err
-	}
 	defer done(ctx)
 
 -	// 正式开始fetch镜像
 	img, err := c.fetch(ctx, fetchCtx, ref, 0)
-	if err != nil {
-		return images.Image{}, err
-	}
 +	return c.createNewImage(ctx, img)
 }
 ```
@@ -653,19 +621,11 @@ type Descriptor struct {
 func (c *Client) fetch(ctx context.Context, rCtx *RemoteContext, ref string, limit int) (images.Image, error) {
 	store := c.ContentStore()
 -	// 用resovler得到image ref的descriptor
-+	name, desc, err := rCtx.Resolver.Resolve(ctx, ref)
-	if err != nil {
-		return images.Image{}, errors.Wrapf(err, "failed to resolve reference %q", ref)
-	}
+	name, desc, err := rCtx.Resolver.Resolve(ctx, ref)
 
 +	fetcher, err := rCtx.Resolver.Fetcher(ctx, name)
-	if err != nil {
-		return images.Image{}, errors.Wrapf(err, "failed to get fetcher for %q", name)
-	}
-
 	var (
 		handler images.Handler
-
 		isConvertible bool
 		converterFunc func(context.Context, ocispec.Descriptor) (ocispec.Descriptor, error)
 		limiter       *semaphore.Weighted
@@ -706,16 +666,11 @@ func (c *Client) fetch(ctx context.Context, rCtx *RemoteContext, ref string, lim
 				if desc.MediaType == docker.LegacyConfigMediaType {
 					isConvertible = true
 				}
-
 				return []ocispec.Descriptor{}, nil
 			},
 		)
 -		// 给descriptor代表的content打上源标签containerd.io/distribution.source.docker.io=library/nginx
 		appendDistSrcLabelHandler, err := docker.AppendDistributionSourceLabel(store, ref)
-		if err != nil {
-			return images.Image{}, err
-		}
-
 		handlers := append(rCtx.BaseHandlers,
 +			remotes.FetchHandler(store, fetcher),
 +			convertibleHandler,
@@ -740,14 +695,10 @@ func (c *Client) fetch(ctx context.Context, rCtx *RemoteContext, ref string, lim
 	}
 
 -	// 运行配置好的handlers，包括content的下载，这是一个递归函数，把所有manifest里的children资源都下载
-	if err := images.Dispatch(ctx, handler, limiter, desc); err != nil {
-		return images.Image{}, err
-	}
+	images.Dispatch(ctx, handler, limiter, desc)
 
 	if isConvertible {
-		if desc, err = converterFunc(ctx, desc); err != nil {
-			return images.Image{}, err
-		}
+		converterFunc(ctx, desc)
 	}
 
 	return images.Image{
@@ -759,10 +710,6 @@ func (c *Client) fetch(ctx context.Context, rCtx *RemoteContext, ref string, lim
 
 func (r *dockerResolver) Fetcher(ctx context.Context, ref string) (remotes.Fetcher, error) {
 	base, err := r.resolveDockerBase(ref)
-	if err != nil {
-		return nil, err
-	}
-
 	return dockerFetcher{
 		dockerBase: base,
 	}, nil
@@ -775,7 +722,6 @@ func Dispatch(ctx context.Context, handler Handler, limiter *semaphore.Weighted,
 	eg, ctx2 := errgroup.WithContext(ctx)
 	for _, desc := range descs {
 		desc := desc
-
 		if limiter != nil {
 			if err := limiter.Acquire(ctx, 1); err != nil {
 				return err
@@ -789,13 +735,6 @@ func Dispatch(ctx context.Context, handler Handler, limiter *semaphore.Weighted,
 			if limiter != nil {
 				limiter.Release(1)
 			}
-			if err != nil {
-				if errors.Is(err, ErrSkipDesc) {
-					return nil // don't traverse the children.
-				}
-				return err
-			}
-
 			if len(children) > 0 {
 -				// 深度优先，递归下载manifest里的children资源（descriptor）			
 				return Dispatch(ctx2, handler, limiter, children...)
@@ -804,7 +743,6 @@ func Dispatch(ctx context.Context, handler Handler, limiter *semaphore.Weighted,
 			return nil
 		})
 	}
-
 	return eg.Wait()
 }
 ```
@@ -833,14 +771,7 @@ func (r *dockerResolver) Resolve(ctx context.Context, ref string) (string, ocisp
 -	//                                         capabilities: docker.HostCapabilityPull | docker.HostCapabilityResolve | docker.HostCapabilityPush
 -	//		header:     http.Header}
 	base, err := r.resolveDockerBase(ref)
-	if err != nil {
-		return "", ocispec.Descriptor{}, err
-	}
 	refspec := base.refspec
-	if refspec.Object == "" {
-		return "", ocispec.Descriptor{}, reference.ErrObjectRequired
-	}
-
 	var (
 		firstErr error
 		paths    [][]string
@@ -849,12 +780,6 @@ func (r *dockerResolver) Resolve(ctx context.Context, ref string) (string, ocisp
 	)
 
 	if dgst != "" {
-		if err := dgst.Validate(); err != nil {
-			// need to fail here, since we can't actually resolve the invalid
-			// digest.
-			return "", ocispec.Descriptor{}, err
-		}
-
 		// turns out, we have a valid digest, make a url.
 		paths = append(paths, []string{"manifests", dgst.String()})
 
@@ -867,15 +792,7 @@ func (r *dockerResolver) Resolve(ctx context.Context, ref string) (string, ocisp
 	}
 
 	hosts := base.filterHosts(caps)
-	if len(hosts) == 0 {
-		return "", ocispec.Descriptor{}, errors.Wrap(errdefs.ErrNotFound, "no resolve hosts")
-	}
-
 	ctx, err = ContextWithRepositoryScope(ctx, refspec, false)
-	if err != nil {
-		return "", ocispec.Descriptor{}, err
-	}
-
 -	// 用host + path搭配遍历，直到resovle成功，返回descriptor
 	for _, u := range paths {
 		for _, host := range hosts {
@@ -935,9 +852,6 @@ func (r *dockerResolver) Resolve(ctx context.Context, ref string) (string, ocisp
 				dgstHeader := digest.Digest(resp.Header.Get("Docker-Content-Digest"))
 
 				if dgstHeader != "" && size != -1 {
-					if err := dgstHeader.Validate(); err != nil {
-						return "", ocispec.Descriptor{}, errors.Wrapf(err, "%q in header not a valid digest", dgstHeader)
-					}
 -					// 得到digest					
 					dgst = dgstHeader
 				}
@@ -946,9 +860,7 @@ func (r *dockerResolver) Resolve(ctx context.Context, ref string) (string, ocisp
 				log.G(ctx).Debug("no Docker-Content-Digest header, fetching manifest instead")
 
 				req = base.request(host, http.MethodGet, u...)
-				if err := req.addNamespace(base.refspec.Hostname()); err != nil {
-					return "", ocispec.Descriptor{}, err
-				}
+				req.addNamespace(base.refspec.Hostname())
 
 				for key, value := range r.resolveHeader {
 					req.header[key] = append(req.header[key], value...)
@@ -956,9 +868,6 @@ func (r *dockerResolver) Resolve(ctx context.Context, ref string) (string, ocisp
 
 
 				resp, err := req.doWithRetries(ctx, nil)
-				if err != nil {
-					return "", ocispec.Descriptor{}, err
-				}
 				defer resp.Body.Close()
 
 				bodyReader := countingReader{reader: resp.Body}
@@ -967,28 +876,12 @@ func (r *dockerResolver) Resolve(ctx context.Context, ref string) (string, ocisp
 				if dgst == "" {
 					if contentType == images.MediaTypeDockerSchema1Manifest {
 						b, err := schema1.ReadStripSignature(&bodyReader)
-						if err != nil {
-							return "", ocispec.Descriptor{}, err
-						}
-
 						dgst = digest.FromBytes(b)
 					} else {					
 						dgst, err = digest.FromReader(&bodyReader)
-						if err != nil {
-							return "", ocispec.Descriptor{}, err
-						}
 					}
-				} else if _, err := io.Copy(ioutil.Discard, &bodyReader); err != nil {
-					return "", ocispec.Descriptor{}, err
-				}
+				} else io.Copy(ioutil.Discard, &bodyReader)
 				size = bodyReader.bytesRead
-			}
-			// Prevent resolving to excessively large manifests
-			if size > MaxManifestSize {
-				if firstErr == nil {
-					firstErr = errors.Wrapf(errdefs.ErrNotFound, "rejecting %d byte manifest for %s", size, ref)
-				}
-				continue
 			}
 
 			desc := ocispec.Descriptor{
@@ -1015,10 +908,6 @@ func (r *dockerResolver) Resolve(ctx context.Context, ref string) (string, ocisp
 
 func (r *dockerResolver) resolveDockerBase(ref string) (*dockerBase, error) {
 	refspec, err := reference.Parse(ref)
-	if err != nil {
-		return nil, err
-	}
-
 	return r.base(refspec)
 }
 
@@ -1032,9 +921,6 @@ type dockerBase struct {
 func (r *dockerResolver) base(refspec reference.Spec) (*dockerBase, error) {
 	host := refspec.Hostname()
 	hosts, err := r.hosts(host)
-	if err != nil {
-		return nil, err
-	}
 	return &dockerBase{
 		refspec:    refspec,
 		repository: strings.TrimPrefix(refspec.Locator, host+"/"),
@@ -1168,20 +1054,14 @@ func fetch(ctx context.Context, ingester content.Ingester, fetcher Fetcher, desc
 	if ws.Offset == desc.Size {
 		// If writer is already complete, commit and return
 		err := cw.Commit(ctx, desc.Size, desc.Digest)
-		if err != nil && !errdefs.IsAlreadyExists(err) {
-			return errors.Wrapf(err, "failed commit on ref %q", ws.Ref)
-		}
 		return nil
 	}
 
 +	rc, err := fetcher.Fetch(ctx, desc)
-	if err != nil {
-		return err
-	}
 	defer rc.Close()
 
 -	// 把下载得到的blob放入content store。reader直接拷入writer 
-+	return content.Copy(ctx, cw, rc, desc.Size, desc.Digest)
+	return content.Copy(ctx, cw, rc, desc.Size, desc.Digest)
 }
 ```
 
@@ -1191,15 +1071,7 @@ func (r dockerFetcher) Fetch(ctx context.Context, desc ocispec.Descriptor) (io.R
 	ctx = log.WithLogger(ctx, log.G(ctx).WithField("digest", desc.Digest))
 
 	hosts := r.filterHosts(HostCapabilityPull)
-	if len(hosts) == 0 {
-		return nil, errors.Wrap(errdefs.ErrNotFound, "no pull hosts")
-	}
-
 	ctx, err := ContextWithRepositoryScope(ctx, r.refspec, false)
-	if err != nil {
-		return nil, err
-	}
-
 	return newHTTPReadSeeker(desc.Size, func(offset int64) (io.ReadCloser, error) {
 		// firstly try fetch via external urls
 		for _, us := range desc.URLs {
@@ -1311,10 +1183,7 @@ func (r dockerFetcher) open(ctx context.Context, req *request, mediatype string,
 		req.header.Set("Range", fmt.Sprintf("bytes=%d-", offset))
 	}
 -	// 开始请求下载
-	resp, err := req.doWithRetries(ctx, nil)
-	if err != nil {
-		return nil, err
-	}
+	resp, err := req.doWithRetries(ctx, n
 	defer func() {
 		if retErr != nil {
 			resp.Body.Close()
@@ -1326,14 +1195,8 @@ func (r dockerFetcher) open(ctx context.Context, req *request, mediatype string,
 		// really distinguish between a 206 and a 200. In the case of 200, we
 		// can discard the bytes, hiding the seek behavior from the
 		// implementation.
-
-		if resp.StatusCode == http.StatusNotFound {
-			return nil, errors.Wrapf(errdefs.ErrNotFound, "content at %v not found", req.String())
-		}
 		var registryErr Errors
-		if err := json.NewDecoder(resp.Body).Decode(&registryErr); err != nil || registryErr.Len() < 1 {
-			return nil, errors.Errorf("unexpected status code %v: %v", req.String(), resp.Status)
-		}
+		json.NewDecoder(resp.Body).Decode(&registryErr)
 		return nil, errors.Errorf("unexpected status code %v: %s - Server message: %s", req.String(), resp.Status, registryErr.Error())
 	}
 	if offset > 0 {
@@ -1351,16 +1214,12 @@ func (r dockerFetcher) open(ctx context.Context, req *request, mediatype string,
 			// Discard up to offset
 			// Could use buffer pool here but this case should be rare
 			n, err := io.Copy(ioutil.Discard, io.LimitReader(resp.Body, offset))
-			if err != nil {
-				return nil, errors.Wrap(err, "failed to discard to offset")
-			}
 			if n != offset {
 				return nil, errors.Errorf("unable to discard to offset")
 			}
 
 		}
 	}
-
 	return resp.Body, nil
 }
 ```
@@ -1376,32 +1235,11 @@ func (r dockerFetcher) open(ctx context.Context, req *request, mediatype string,
 // Copy is buffered, so no need to wrap reader in buffered io.
 func Copy(ctx context.Context, cw Writer, r io.Reader, size int64, expected digest.Digest, opts ...Opt) error {
 	ws, err := cw.Status()
-	if err != nil {
-		return errors.Wrap(err, "failed to get status")
-	}
-
 	if ws.Offset > 0 {
 		r, err = seekReader(r, ws.Offset, size)
-		if err != nil {
-			return errors.Wrapf(err, "unable to resume write to %v", ws.Ref)
-		}
 	}
-
 	copied, err := copyWithBuffer(cw, r)
-	if err != nil {
-		return errors.Wrap(err, "failed to copy")
-	}
-	if size != 0 && copied < size-ws.Offset {
-		// Short writes would return its own error, this indicates a read failure
-		return errors.Wrapf(io.ErrUnexpectedEOF, "failed to read expected number of bytes")
-	}
-
-	if err := cw.Commit(ctx, size, expected, opts...); err != nil {
-		if !errdefs.IsAlreadyExists(err) {
-			return errors.Wrapf(err, "failed commit on ref %q", ws.Ref)
-		}
-	}
-
+	cw.Commit(ctx, size, expected, opts...)
 	return nil
 }
 ```
