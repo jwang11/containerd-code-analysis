@@ -97,31 +97,14 @@ command. As part of this process, we do the following:
 		var (
 			ref = context.Args().First()
 		)
-		if ref == "" {
-			return fmt.Errorf("please provide an image reference to pull")
-		}
-
 		client, ctx, cancel, err := commands.NewClient(context)
-		if err != nil {
-			return err
-		}
 		defer cancel()
 
 		ctx, done, err := client.WithLease(ctx)
-		if err != nil {
-			return err
-		}
 		defer done(ctx)
 
 		config, err := content.NewFetchConfig(ctx, context)
-		if err != nil {
-			return err
-		}
-
 		img, err := content.Fetch(ctx, client, ref, config)
-		if err != nil {
-			return err
-		}
 
 -   		// 前面就是执行$ctr content fetch命令，区别从这里开始
 		log.G(ctx).WithField("image", ref).Debug("unpacking")
@@ -132,15 +115,9 @@ command. As part of this process, we do the following:
 		var p []ocispec.Platform
 		if context.Bool("all-platforms") {
 			p, err = images.Platforms(ctx, client.ContentStore(), img.Target)
-			if err != nil {
-				return errors.Wrap(err, "unable to resolve image platforms")
-			}
 		} else {
 			for _, s := range context.StringSlice("platform") {
 				ps, err := platforms.Parse(s)
-				if err != nil {
-					return errors.Wrapf(err, "unable to parse platform %s", s)
-				}
 				p = append(p, ps)
 			}
 		}
@@ -155,14 +132,8 @@ command. As part of this process, we do the following:
 			i := containerd.NewImageWithPlatform(client, img, platforms.Only(platform))
 -     			// 把image unpack到snapshotter
       			err = i.Unpack(ctx, context.String("snapshotter"))
-			if err != nil {
-				return err
-			}
 			if context.Bool("print-chainid") {
 				diffIDs, err := i.RootFS(ctx)
-				if err != nil {
-					return err
-				}
 				chainID := identity.ChainID(diffIDs).String()
 				fmt.Printf("image chain ID: %s\n", chainID)
 			}
@@ -186,27 +157,15 @@ func NewImageWithPlatform(client *Client, i images.Image, platform platforms.Mat
 ```diff
 func (i *image) Unpack(ctx context.Context, snapshotterName string, opts ...UnpackOpt) error {
 	ctx, done, err := i.client.WithLease(ctx)
-	if err != nil {
-		return err
-	}
 	defer done(ctx)
 
 	var config UnpackConfig
 	for _, o := range opts {
-		if err := o(ctx, &config); err != nil {
-			return err
-		}
+		o(ctx, &config)
 	}
 
 	manifest, err := i.getManifest(ctx, i.platform)
-	if err != nil {
-		return err
-	}
-
 	layers, err := i.getLayers(ctx, i.platform, manifest)
-	if err != nil {
-		return err
-	}
 
 	var (
 		a  = i.client.DiffService()
@@ -216,26 +175,14 @@ func (i *image) Unpack(ctx context.Context, snapshotterName string, opts ...Unpa
 		unpacked bool
 	)
 -	// 如果没有指定snapshotter，使用缺省的	
-+	snapshotterName, err = i.client.resolveSnapshotterName(ctx, snapshotterName)
-	if err != nil {
-		return err
-	}
+	snapshotterName, err = i.client.resolveSnapshotterName(ctx, snapshotterName)
 	sn, err := i.client.getSnapshotter(ctx, snapshotterName)
-	if err != nil {
-		return err
-	}
 	if config.CheckPlatformSupported {
-		if err := i.checkSnapshotterSupport(ctx, snapshotterName, manifest); err != nil {
-			return err
-		}
+		i.checkSnapshotterSupport(ctx, snapshotterName, manifest)
 	}
 
 	for _, layer := range layers {
 		unpacked, err = rootfs.ApplyLayerWithOpts(ctx, layer, chain, sn, a, config.SnapshotOpts, config.ApplyOpts)
-		if err != nil {
-			return err
-		}
-
 		if unpacked {
 			// Set the uncompressed label after the uncompressed
 			// digest has been verified through apply.
@@ -245,21 +192,14 @@ func (i *image) Unpack(ctx context.Context, snapshotterName string, opts ...Unpa
 					"containerd.io/uncompressed": layer.Diff.Digest.String(),
 				},
 			}
-			if _, err := cs.Update(ctx, cinfo, "labels.containerd.io/uncompressed"); err != nil {
-				return err
-			}
+			cs.Update(ctx, cinfo, "labels.containerd.io/uncompressed")
 		}
 
 		chain = append(chain, layer.Diff.Digest)
 	}
 
 	desc, err := i.i.Config(ctx, cs, i.platform)
-	if err != nil {
-		return err
-	}
-
 	rootfs := identity.ChainID(chain).String()
-
 	cinfo := content.Info{
 		Digest: desc.Digest,
 		Labels: map[string]string{
@@ -276,9 +216,6 @@ func (i *image) Unpack(ctx context.Context, snapshotterName string, opts ...Unpa
 func (i *image) getManifest(ctx context.Context, platform platforms.MatchComparer) (ocispec.Manifest, error) {
 	cs := i.ContentStore()
 	manifest, err := images.Manifest(ctx, cs, i.i.Target, platform)
-	if err != nil {
-		return ocispec.Manifest{}, err
-	}
 	return manifest, nil
 }
 ```
@@ -287,12 +224,6 @@ func (i *image) getManifest(ctx context.Context, platform platforms.MatchCompare
 func (i *image) getLayers(ctx context.Context, platform platforms.MatchComparer, manifest ocispec.Manifest) ([]rootfs.Layer, error) {
 	cs := i.ContentStore()
 	diffIDs, err := i.i.RootFS(ctx, cs, platform)
-	if err != nil {
-		return nil, errors.Wrap(err, "failed to resolve rootfs")
-	}
-	if len(diffIDs) != len(manifest.Layers) {
-		return nil, errors.Errorf("mismatched image rootfs and manifest layers")
-	}
 	layers := make([]rootfs.Layer, len(diffIDs))
 	for i := range diffIDs {
 		layers[i].Diff = ocispec.Descriptor{
@@ -352,6 +283,7 @@ func applyLayers(ctx context.Context, layers []Layer, chain []digest.Digest, sn 
 	)
 
 	for {
+-		// key的产生	
 		key = fmt.Sprintf(snapshots.UnpackKeyFormat, uniquePart(), chainID)
 
 		// Prepare snapshot with from parent, label as root
@@ -370,39 +302,17 @@ func applyLayers(ctx context.Context, layers []Layer, chain []digest.Digest, sn 
 				// Try a different key
 				continue
 			}
-
-			// Already exists should have the caller retry
-			return errors.Wrapf(err, "failed to prepare extraction snapshot %q", key)
-
 		}
 		break
 	}
-	defer func() {
-		if err != nil {
-			if !errdefs.IsAlreadyExists(err) {
-				log.G(ctx).WithError(err).WithField("key", key).Infof("apply failure, attempting cleanup")
-			}
-
-			if rerr := sn.Remove(ctx, key); rerr != nil {
-				log.G(ctx).WithError(rerr).WithField("key", key).Warnf("extraction snapshot removal failed")
-			}
-		}
-	}()
 
 +	diff, err = a.Apply(ctx, layer.Blob, mounts, applyOpts...)
-	if err != nil {
-		err = errors.Wrapf(err, "failed to extract layer %s", layer.Diff.Digest)
-		return err
-	}
 	if diff.Digest != layer.Diff.Digest {
 		err = errors.Errorf("wrong diff id calculated on extraction %q", diff.Digest)
 		return err
 	}
 
-+	if err = sn.Commit(ctx, chainID.String(), key, opts...); err != nil {
-		err = errors.Wrapf(err, "failed to commit snapshot %s", key)
-		return err
-	}
++	sn.Commit(ctx, chainID.String(), key, opts...)
 
 	return nil
 }
