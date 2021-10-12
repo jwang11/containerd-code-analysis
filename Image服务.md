@@ -71,13 +71,7 @@ func init() {
 		},
 		InitFn: func(ic *plugin.InitContext) (interface{}, error) {
 			m, err := ic.Get(plugin.MetadataPlugin)
-			if err != nil {
-				return nil, err
-			}
 			g, err := ic.Get(plugin.GCPlugin)
-			if err != nil {
-				return nil, err
-			}
 
 +			return &local{
 +				store:     metadata.NewImageStore(m.(*metadata.DB)),
@@ -171,7 +165,7 @@ func (l *local) Delete(ctx context.Context, req *imagesapi.DeleteImageRequest, _
 ## 3. 底层实现
 
 ### 建立imageStore
-```
+```diff
 // Image provides the model for how containerd views container images.
 type Image struct {
 	// Name of the image.
@@ -225,7 +219,7 @@ func NewImageStore(db *DB) images.Store {
 //        │        ╘══*key* : <string>           - Label value
 ```
 - ***Get***
-```
+```diff
 func (s *imageStore) Get(ctx context.Context, name string) (images.Image, error) {
 	var image images.Image
 
@@ -288,7 +282,7 @@ func readImage(image *images.Image, bkt *bolt.Bucket) error {
 ```
 
 - ***List***
-```
+```diff
 func (s *imageStore) List(ctx context.Context, fs ...string) ([]images.Image, error) {
 	namespace, err := namespaces.NamespaceRequired(ctx)
 	filter, err := filters.ParseAll(fs...)
@@ -360,7 +354,7 @@ func writeImage(bkt *bolt.Bucket, image *images.Image) error {
 ```
 
 - ***Update***
-```
+```diff
 func (s *imageStore) Update(ctx context.Context, image images.Image, fieldpaths ...string) (images.Image, error) {
 	namespace, err := namespaces.NamespaceRequired(ctx)
 	var updated images.Image
@@ -424,7 +418,7 @@ func (s *imageStore) Update(ctx context.Context, image images.Image, fieldpaths 
 ```
 
 - ***Delete***
-```
+```diff
 func (s *imageStore) Delete(ctx context.Context, name string, opts ...images.DeleteOpt) error {
 	namespace, err := namespaces.NamespaceRequired(ctx)
 	return update(ctx, s.db, func(tx *bolt.Tx) error {
