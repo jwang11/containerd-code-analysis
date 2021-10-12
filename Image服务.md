@@ -75,7 +75,7 @@ func init() {
 
 +			return &local{
 +				store:     metadata.NewImageStore(m.(*metadata.DB)),
-+				publisher: ic.Events,
+				publisher: ic.Events,
 				gc:        g.(gcScheduler),
 			}, nil
 		},
@@ -144,22 +144,6 @@ func (l *local) Update(ctx context.Context, req *imagesapi.UpdateImageRequest, _
 
 	return &resp, nil
 }
-
-func (l *local) Delete(ctx context.Context, req *imagesapi.DeleteImageRequest, _ ...grpc.CallOption) (*ptypes.Empty, error) {
-	log.G(ctx).WithField("name", req.Name).Debugf("delete image")
-
-+	if err := l.store.Delete(ctx, req.Name); err != nil {}
-
-	if err := l.publisher.Publish(ctx, "/images/delete", &eventstypes.ImageDelete{
-		Name: req.Name,
-	})
-
-	if req.Sync {
-		if _, err := l.gc.ScheduleAndWait(ctx); err != nil {}
-	}
-
-	return &ptypes.Empty{}, nil
-}
 ```
 
 ## 3. 底层实现
@@ -222,12 +206,7 @@ func NewImageStore(db *DB) images.Store {
 ```diff
 func (s *imageStore) Get(ctx context.Context, name string) (images.Image, error) {
 	var image images.Image
-
 	namespace, err := namespaces.NamespaceRequired(ctx)
-	if err != nil {
-		return images.Image{}, err
-	}
-
 	if err := view(ctx, s.db, func(tx *bolt.Tx) error {
 		bkt := getImagesBucket(tx, namespace)
 		if bkt == nil || bkt.Bucket([]byte(name)) == nil {
@@ -248,7 +227,7 @@ func (s *imageStore) Get(ctx context.Context, name string) (images.Image, error)
 
 		ibkt := bkt.Bucket([]byte(name))
 		image.Name = name
-+		if err := readImage(&image, ibkt); err != nil {}
++		readImage(&image, ibkt)
 		return nil
 	})
 	return image, nil
@@ -297,9 +276,7 @@ func (s *imageStore) List(ctx context.Context, fs ...string) ([]images.Image, er
 				}
 				kbkt = bkt.Bucket(k)
 			)
-
-			if err := readImage(&image, kbkt); err != nil {}
-
+			readImage(&image, kbkt)
 			if filter.Match(adaptImage(image)) {
 				m = append(m, image)
 			}
@@ -332,15 +309,12 @@ func (s *imageStore) Create(ctx context.Context, image images.Image) (images.Ima
 > Create -> writeImage
 ```diff
 func writeImage(bkt *bolt.Bucket, image *images.Image) error {
-	if err := boltutil.WriteTimestamps(bkt, image.CreatedAt, image.UpdatedAt); err != nil {}
-
-	if err := boltutil.WriteLabels(bkt, image.Labels); err != nil {}
-
-	if err := boltutil.WriteAnnotations(bkt, image.Target.Annotations); err != nil {}
+	boltutil.WriteTimestamps(bkt, image.CreatedAt, image.UpdatedAt)
+	boltutil.WriteLabels(bkt, image.Labels)
+	boltutil.WriteAnnotations(bkt, image.Target.Annotations)
 
 	// write the target bucket
 	tbkt, err := bkt.CreateBucketIfNotExists(bucketKeyTarget)
-
 	sizeEncoded, err := encodeInt(image.Target.Size)
 
 	for _, v := range [][2][]byte{
@@ -348,7 +322,6 @@ func writeImage(bkt *bolt.Bucket, image *images.Image) error {
 		{bucketKeyMediaType, []byte(image.Target.MediaType)},
 		{bucketKeySize, sizeEncoded},
 	}
-
 	return nil
 }
 ```
@@ -414,18 +387,5 @@ func (s *imageStore) Update(ctx context.Context, image images.Image, fieldpaths 
 	})
 	return updated, nil
 
-}
-```
-
-- ***Delete***
-```diff
-func (s *imageStore) Delete(ctx context.Context, name string, opts ...images.DeleteOpt) error {
-	namespace, err := namespaces.NamespaceRequired(ctx)
-	return update(ctx, s.db, func(tx *bolt.Tx) error {
-		bkt := getImagesBucket(tx, namespace)
-		if err = bkt.DeleteBucket([]byte(name)); err != nil {}
-		atomic.AddUint32(&s.db.dirty, 1)
-		return nil
-	})
 }
 ```
