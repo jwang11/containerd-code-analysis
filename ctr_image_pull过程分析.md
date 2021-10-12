@@ -249,10 +249,6 @@ func ApplyLayerWithOpts(ctx context.Context, layer Layer, chain []digest.Digest,
 	)
 -	// 如果chainID代表的layer在snapshoter里面没有，就生成一个	
 	if _, err := sn.Stat(ctx, chainID); err != nil {
-		if !errdefs.IsNotFound(err) {
-			return false, errors.Wrapf(err, "failed to stat snapshot %s", chainID)
-		}
-
 +		if err := applyLayers(ctx, []Layer{layer}, append(chain, layer.Diff.Digest), sn, a, opts, applyOpts); err != nil {
 			if !errdefs.IsAlreadyExists(err) {
 				return false, err
@@ -307,11 +303,6 @@ func applyLayers(ctx context.Context, layers []Layer, chain []digest.Digest, sn 
 	}
 
 +	diff, err = a.Apply(ctx, layer.Blob, mounts, applyOpts...)
-	if diff.Digest != layer.Diff.Digest {
-		err = errors.Errorf("wrong diff id calculated on extraction %q", diff.Digest)
-		return err
-	}
-
 +	sn.Commit(ctx, chainID.String(), key, opts...)
 
 	return nil
