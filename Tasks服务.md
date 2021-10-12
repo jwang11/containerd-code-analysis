@@ -2,7 +2,7 @@
 > Task代表执行中的Container对象，而Task服务管理这些对象。// Task is the runtime object for an executing container
 
 ## 1. 外部服务
-### 1.1 Plguin注册
+### 1.1 Plugin注册
 外部服务通过GPRC Plugin注册，ID是“tasks”，类型“plugin.GRPCPlugin”
 ```diff
 func init() {
