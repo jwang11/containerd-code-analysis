@@ -18,134 +18,6 @@ layer-sha256:b4d181a07f8025e00e0cb28f1cc14613da2ce26450b80c54aea537fa93cf3bda:  
 elapsed: 7.7 s                                                                    total:  25.4 M (3.3 MiB/s)
 
 根据上面output的DIGEST信息，
-- 获取index内容
-$ ctr content get sha256:47ae43cdfc7064d28800bc42e79a429540c7c80168e8c8952778c0d5af1c09db|jq
-{
-  "manifests": [
-    {
-      "digest": "sha256:2f1cd90e00fe2c991e18272bb35d6a8258eeb27785d121aa4cc1ae4235167cfd",
-      "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
-      "platform": {
-        "architecture": "amd64",
-        "os": "linux"
-      },
-      "size": 1570
-    },
-    {
-      "digest": "sha256:97e6b328ee95a13a70f7ce1c2b3dca2b7308904f62f495bca018916a7fdd6b2f",
-      "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
-      "platform": {
-        "architecture": "arm",
-        "os": "linux",
-        "variant": "v5"
-      },
-      "size": 1570
-    },
-    {
-      "digest": "sha256:f8b719df74acd257398d3932ff7dc10baf83f8f9502c902967fe65cc902c3c2e",
-      "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
-      "platform": {
-        "architecture": "arm",
-        "os": "linux",
-        "variant": "v7"
-      },
-      "size": 1570
-    },
-    {
-      "digest": "sha256:7c91baa42a9371c925b909701b84ee543aa2d6e9fda4543225af2e17f531a243",
-      "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
-      "platform": {
-        "architecture": "arm64",
-        "os": "linux",
-        "variant": "v8"
-      },
-      "size": 1570
-    },
-    {
-      "digest": "sha256:42dd8fe2877e2d3ff756b4043094240825ef8a48608c4dc62696dc02dbb8d40d",
-      "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
-      "platform": {
-        "architecture": "386",
-        "os": "linux"
-      },
-      "size": 1570
-    },
-    {
-      "digest": "sha256:ed30eb3fa0b5b5cf3c2a52fa27003c0fffef534f215b0e005ba1c010d3946a2b",
-      "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
-      "platform": {
-        "architecture": "mips64le",
-        "os": "linux"
-      },
-      "size": 1570
-    },
-    {
-      "digest": "sha256:8d980a1beb6dbf8c220cd8dd12e57e14f8e88c3966d44a440dc390c059e130e8",
-      "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
-      "platform": {
-        "architecture": "ppc64le",
-        "os": "linux"
-      },
-      "size": 1570
-    },
-    {
-      "digest": "sha256:f76f0a37630ab0ec24263dc1c1d12f0ff749d4bb1fb610d2ba8f1fdd63bbe6df",
-      "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
-      "platform": {
-        "architecture": "s390x",
-        "os": "linux"
-      },
-      "size": 1570
-    }
-  ],
-  "mediaType": "application/vnd.docker.distribution.manifest.list.v2+json",
-  "schemaVersion": 2
-}
-
-- 获取manifest内容
-$ ctr content get sha256:2f1cd90e00fe2c991e18272bb35d6a8258eeb27785d121aa4cc1ae4235167cfd|jq
-{
-  "schemaVersion": 2,
-  "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
-  "config": {
-    "mediaType": "application/vnd.docker.container.image.v1+json",
-    "size": 7733,
-    "digest": "sha256:4f380adfc10f4cd34f775ae57a17d2835385efd5251d6dfe0f246b0018fb0399"
-  },
-  "layers": [
-    {
-      "mediaType": "application/vnd.docker.image.rootfs.diff.tar.gzip",
-      "size": 27145851,
-      "digest": "sha256:b4d181a07f8025e00e0cb28f1cc14613da2ce26450b80c54aea537fa93cf3bda"
-    },
-    {
-      "mediaType": "application/vnd.docker.image.rootfs.diff.tar.gzip",
-      "size": 26580118,
-      "digest": "sha256:edb81c9bc1f5416a41e5bea21748dc912772fedbd4bd90e5e3ebfe16b453edce"
-    },
-    {
-      "mediaType": "application/vnd.docker.image.rootfs.diff.tar.gzip",
-      "size": 602,
-      "digest": "sha256:b21fed559b9f420d83f8e38ca08d1ac4f15298a3ae02c6de56f364bee2299f78"
-    },
-    {
-      "mediaType": "application/vnd.docker.image.rootfs.diff.tar.gzip",
-      "size": 895,
-      "digest": "sha256:03e6a245275128e26fc650e724e3fc4510d81f8111bae35ece70242b0a638215"
-    },
-    {
-      "mediaType": "application/vnd.docker.image.rootfs.diff.tar.gzip",
-      "size": 667,
-      "digest": "sha256:b82f7f888feb03d38fed4dad68d7265a8b276f1f0c543d549fc6ef30b42c00eb"
-    },
-    {
-      "mediaType": "application/vnd.docker.image.rootfs.diff.tar.gzip",
-      "size": 1397,
-      "digest": "sha256:5430e98eba646ef4a34baff035f6f7483761c873711febd48fbcca38d7890c1e"
-    }
-  ]
-}
-
 - 获取config内容
 $ ctr content get sha256:4f380adfc10f4cd34f775ae57a17d2835385efd5251d6dfe0f246b0018fb0399|jq
 {
@@ -277,7 +149,7 @@ docker-entrypoint.d/
 docker-entrypoint.d/30-tune-worker-processes.sh
 ```
 
-### [代码入口](https://github.com/containerd/containerd/blob/main/cmd/ctr/commands/content/content.go)
+## [代码入口](https://github.com/containerd/containerd/blob/main/cmd/ctr/commands/content/content.go)
 ```diff
 	getCommand = cli.Command{
 		Name:        "get",
@@ -286,26 +158,17 @@ docker-entrypoint.d/30-tune-worker-processes.sh
 		Description: "display the image object",
 		Action: func(context *cli.Context) error {
 			dgst, err := digest.Parse(context.Args().First())
-			if err != nil {
-				return err
-			}
 			client, ctx, cancel, err := commands.NewClient(context)
-			if err != nil {
-				return err
-			}
 			defer cancel()
-+			cs := client.ContentStore()
+			cs := client.ContentStore()
 -			// 根据digest，得到remote的ReaderAt对象
-+			ra, err := cs.ReaderAt(ctx, ocispec.Descriptor{Digest: dgst})
-			if err != nil {
-				return err
-			}
+			ra, err := cs.ReaderAt(ctx, ocispec.Descriptor{Digest: dgst})
 			defer ra.Close()
 
 			// use 1MB buffer like we do for ingesting
 			buf := make([]byte, 1<<20)
 -			// 隐式调用ReaderAt对象里的ReadAt方法
-+			_, err = io.CopyBuffer(os.Stdout, content.NewReader(ra), buf)
+			_, err = io.CopyBuffer(os.Stdout, content.NewReader(ra), buf)
 			return err
 		},
 	}
@@ -342,7 +205,7 @@ func (pcs *proxyContentStore) ReaderAt(ctx context.Context, desc ocispec.Descrip
 		ctx:    ctx,
 		digest: desc.Digest,
 -   // 通过前面Info得到content的size
-+		size:   i.Size,
+		size:   i.Size,
 		client: pcs.client,
 	}, nil
 }
@@ -387,19 +250,11 @@ func (ra *remoteReaderAt) ReadAt(p []byte, off int64) (n int, err error) {
 	// we MUST cancel the child context; see comment above
 	defer cancel()
 - // 调用server端的/containerd.services.content.v1.Content/Read
-+	rc, err := ra.client.Read(childCtx, rr)
-	if err != nil {
-		return 0, err
-	}
-
+	rc, err := ra.client.Read(childCtx, rr)
 	for len(p) > 0 {
 		var resp *contentapi.ReadContentResponse
 		// fill our buffer up until we can fill p.
 		resp, err = rc.Recv()
-		if err != nil {
-			return n, err
-		}
-
 		copied := copy(p, resp.Data)
 		n += copied
 		p = p[copied:]
@@ -411,20 +266,9 @@ func (ra *remoteReaderAt) ReadAt(p []byte, off int64) (n int, err error) {
 >> ***Server端content Service.Read***
 ```diff
 func (s *service) Read(req *api.ReadContentRequest, session api.Content_ReadServer) error {
-	if err := req.Digest.Validate(); err != nil {
-		return status.Errorf(codes.InvalidArgument, "%v: %v", req.Digest, err)
-	}
-
 	oi, err := s.store.Info(session.Context(), req.Digest)
-	if err != nil {
-		return errdefs.ToGRPC(err)
-	}
-
 -	// 取到local store的ReaderAt对象
-+	ra, err := s.store.ReaderAt(session.Context(), ocispec.Descriptor{Digest: req.Digest})
-	if err != nil {
-		return errdefs.ToGRPC(err)
-	}
+	ra, err := s.store.ReaderAt(session.Context(), ocispec.Descriptor{Digest: req.Digest})
 	defer ra.Close()
 
 	var (
@@ -452,7 +296,7 @@ func (s *service) Read(req *api.ReadContentRequest, session api.Content_ReadServ
 	}
 
 -	// 把local Store里内容（文件方式管理）copy出来
-+	_, err = io.CopyBuffer(
+	_, err = io.CopyBuffer(
 		&readResponseWriter{session: session},
 		io.NewSectionReader(ra, offset, size), *p)
 	return errdefs.ToGRPC(err)
@@ -460,7 +304,7 @@ func (s *service) Read(req *api.ReadContentRequest, session api.Content_ReadServ
 ```
 
 - ***content.NewReader(ra)***
-```
+```diff
 // NewReader returns a io.Reader from a ReaderAt
 func NewReader(ra ReaderAt) io.Reader {
 	rd := io.NewSectionReader(ra, 0, ra.Size())
