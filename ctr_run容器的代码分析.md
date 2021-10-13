@@ -58,7 +58,7 @@ OPTIONS:
    --cpu-period value                      Limit CPU CFS period (default: 0)
 ```
 
-### 代码流程Overview
+## 1. 代码流程Overview
 - 主要流程其实是分了三步<br>
 		1. *创建container对象。这一步没有涉及v2 shim和runc，只是通过container服务在metadata里创建了一个名字是ID的container对象。*<br>
 		2. *创建Task，启动v2 shim，然后通过shim运行$runc create image ID。*<br>
@@ -171,15 +171,10 @@ var Command = cli.Command{
 			return errors.New("container id must be provided")
 		}
 		client, ctx, cancel, err := commands.NewClient(context)
-		if err != nil {
-			return err
-		}
+
 		defer cancel()
 -		// 创建Container对象，只在containerd端
 		container, err := NewContainer(ctx, client, context)
-		if err != nil {
-			return err
-		}
 		if context.Bool("rm") && !detach {
 			defer container.Delete(ctx, containerd.WithSnapshotCleanup)
 		}
@@ -222,27 +217,19 @@ var Command = cli.Command{
 			}
 		}
 		if context.IsSet("pid-file") {
-			if err := commands.WritePidFile(context.String("pid-file"), int(task.Pid())); err != nil {
-				return err
-			}
+			commands.WritePidFile(context.String("pid-file"), int(task.Pid()))
 		}
 		if enableCNI {
-			if _, err := network.Setup(ctx, fullID(ctx, container), fmt.Sprintf("/proc/%d/ns/net", task.Pid())); err != nil {
-				return err
-			}
+			network.Setup(ctx, fullID(ctx, container), fmt.Sprintf("/proc/%d/ns/net", task.Pid()))
 		}
 -		// 启动contaienr，runc start id		
-		if err := task.Start(ctx); err != nil {
-			return err
-		}
+		task.Start(ctx)
 -		// 如果设置detach，这里就可以退出了		
 		if detach {
 			return nil
 		}
 		if tty {
-			if err := tasks.HandleConsoleResize(ctx, task, con); err != nil {
-				logrus.WithError(err).Error("console resize")
-			}
+			tasks.HandleConsoleResize(ctx, task, con)
 		} else {
 			sigc := commands.ForwardAllSignals(ctx, task)
 			defer commands.StopCatch(sigc)
@@ -250,21 +237,14 @@ var Command = cli.Command{
 -		// 等待container运行结束		
 		status := <-statusC
 		code, _, err := status.Result()
-		if err != nil {
-			return err
-		}
-		if _, err := task.Delete(ctx); err != nil {
-			return err
-		}
-		if code != 0 {
-			return cli.NewExitError("", int(code))
-		}
+		task.Delete(ctx)
 		return nil
 	},
 }
 ```
 
-### 步骤一：创建Contaienr对象
+## 2. 代码流程
+### 2.1 创建Contaienr对象
 - ***newContainer***是创建一个container对象，通过Continer服务保存在metadata中。注意，这里没有涉及runc
 - 主要思路是根据命令行的输入，用opts和cOpts两个闭包数组来构建Spec和Container属性。
 ```diff
@@ -308,22 +288,13 @@ func NewContainer(ctx gocontext.Context, client *containerd.Client, context *cli
 -		// 如果命令选项有--rootfs，ref就是本地rootfs的目录，否则ref是registry的地址，如docker.io/library/busybox:latest
 		if context.Bool("rootfs") {
 			rootfs, err := filepath.Abs(ref)
-			if err != nil {
-				return nil, err
-			}
 			opts = append(opts, oci.WithRootFSPath(rootfs))
 		} else {
 			snapshotter := context.String("snapshotter")
 			var image containerd.Image
 			i, err := client.ImageService().Get(ctx, ref)
-			if err != nil {
-				return nil, err
-			}
 			if ps := context.String("platform"); ps != "" {
 				platform, err := platforms.Parse(ps)
-				if err != nil {
-					return nil, err
-				}
 				image = containerd.NewImageWithPlatform(client, i, platforms.Only(platform))
 			} else {
 				image = containerd.NewImage(client, i)
@@ -331,9 +302,6 @@ func NewContainer(ctx gocontext.Context, client *containerd.Client, context *cli
 
 -			// 如果image还没有unpack到snapshotter里，就执行unpack
 			unpacked, err := image.IsUnpacked(ctx, snapshotter)
-			if err != nil {
-				return nil, err
-			}
 			if !unpacked {
 				if err := image.Unpack(ctx, snapshotter); err != nil {
 					return nil, err
@@ -347,13 +315,7 @@ func NewContainer(ctx gocontext.Context, client *containerd.Client, context *cli
 -			// 解析命令行提供的uidmap和gidmap				
 			if uidmap, gidmap := context.String("uidmap"), context.String("gidmap"); uidmap != "" && gidmap != "" {
 				uidMap, err := parseIDMapping(uidmap)
-				if err != nil {
-					return nil, err
-				}
 				gidMap, err := parseIDMapping(gidmap)
-				if err != nil {
-					return nil, err
-				}
 				opts = append(opts,
 					oci.WithUserNamespace([]specs.LinuxIDMapping{uidMap}, []specs.LinuxIDMapping{gidMap}))
 				// use snapshotter opts or the remapped snapshot support to shift the filesystem
@@ -493,6 +455,7 @@ func NewContainer(ctx gocontext.Context, client *containerd.Client, context *cli
 			opts = append(opts, oci.WithDevices(dev, "", "rwm"))
 		}
 
+-		// 指定rootfs的propagation类型share, slave, private
 		rootfsPropagation := context.String("rootfs-propagation")
 		if rootfsPropagation != "" {
 			opts = append(opts, func(_ gocontext.Context, _ oci.Client, _ *containers.Container, s *oci.Spec) error {
@@ -511,9 +474,6 @@ func NewContainer(ctx gocontext.Context, client *containerd.Client, context *cli
 
 -	// 获得runc的options，包括runc的命令名，root路径和systemdcgroup
 	runtimeOpts, err := getRuntimeOptions(context)
-	if err != nil {
-		return nil, err
-	}
 	cOpts = append(cOpts, containerd.WithRuntime(context.String("runtime"), runtimeOpts))
 
 	opts = append(opts, oci.WithAnnotations(commands.LabelArgs(context.StringSlice("label"))))
@@ -1040,7 +1000,7 @@ func containerFromRecord(client *Client, c containers.Container) *container {
 }
 ```
 
-### 步骤二：创建runtime里的container
+### 2.2 创建runtime里的container
 - NewTask创建Runtime里container
 ```diff
 +		task, err := tasks.NewTask(ctx, client, container, context.String("checkpoint"), con, context.Bool("null-io"), context.String("log-uri"), ioOpts, opts...)
@@ -1052,34 +1012,22 @@ func NewTask(ctx gocontext.Context, client *containerd.Client, container contain
 	}
 	if checkpoint != "" {
 		im, err := client.GetImage(ctx, checkpoint)
-		if err != nil {
-			return nil, err
-		}
 		opts = append(opts, containerd.WithTaskCheckpoint(im))
 	}
 -	// 根据命令行参数，创建ioCreator闭包，处理终端stdin/stdout/stderr	
 	var ioCreator cio.Creator
 	if con != nil {
-		if nullIO {
-			return nil, errors.New("tty and null-io cannot be used together")
-		}
 		ioCreator = cio.NewCreator(append([]cio.Opt{cio.WithStreams(con, con, nil), cio.WithTerminal}, ioOpts...)...)
 	} else if nullIO {
 		ioCreator = cio.NullIO
 	} else if logURI != "" {
 		u, err := url.Parse(logURI)
-		if err != nil {
-			return nil, err
-		}
 		ioCreator = cio.LogURI(u)
 	} else {
 		ioCreator = cio.NewCreator(append([]cio.Opt{cio.WithStreams(stdinC, os.Stdout, os.Stderr)}, ioOpts...)...)
 	}
 
 +	t, err := container.NewTask(ctx, ioCreator, opts...)
-	if err != nil {
-		return nil, err
-	}
 	stdinC.closer = func() {
 		t.CloseIO(ctx, containerd.WithStdinCloser)
 	}
@@ -1098,7 +1046,6 @@ func WithFIFODir(dir string) Opt {
 		opt.FIFODir = dir
 	}
 }
-
 
 -  2. 如果命令行指定tty，把当前console设置给container里的三个streams，同时terminal=true
 cio.WithStreams(con, con, nil)
@@ -1154,9 +1101,6 @@ func NewFIFOSetInDir(root, id string, terminal bool) (*FIFOSet, error) {
 		}
 	}
 	dir, err := ioutil.TempDir(root, "")
-	if err != nil {
-		return nil, err
-	}
 	closer := func() error {
 		return os.RemoveAll(dir)
 	}
@@ -1188,11 +1132,6 @@ type pipes struct {
 func copyIO(fifos *FIFOSet, ioset *Streams) (*cio, error) {
 	var ctx, cancel = context.WithCancel(context.Background())
 +	pipes, err := openFifos(ctx, fifos)
-	if err != nil {
-		cancel()
-		return nil, err
-	}
-
 -	// 用3个go rouine协程分别处理stdin，stdout和stderr
 	if fifos.Stdin != "" {
 		go func() {
@@ -1250,15 +1189,6 @@ type task struct {
 func (c *container) NewTask(ctx context.Context, ioCreate cio.Creator, opts ...NewTaskOpts) (_ Task, err error) {
 -	// 通过fifo接口接管console
 	i, err := ioCreate(c.id)
-	if err != nil {
-		return nil, err
-	}
-	defer func() {
-		if err != nil && i != nil {
-			i.Cancel()
-			i.Close()
-		}
-	}()
 	cfg := i.Config()
 	request := &tasks.CreateTaskRequest{
 		ContainerID: c.id,
@@ -1268,9 +1198,6 @@ func (c *container) NewTask(ctx context.Context, ioCreate cio.Creator, opts ...N
 		Stderr:      cfg.Stderr,
 	}
 	r, err := c.get(ctx)
-	if err != nil {
-		return nil, err
-	}
 	if r.SnapshotKey != "" {
 		if r.Snapshotter == "" {
 			return nil, errors.Wrapf(errdefs.ErrInvalidArgument, "unable to resolve rootfs mounts without snapshotter on container")
@@ -1311,9 +1238,7 @@ func (c *container) NewTask(ctx context.Context, ioCreate cio.Creator, opts ...N
 	}
 -	// apply所有的newTaskOpts	
 	for _, o := range opts {
-		if err := o(ctx, c.client, &info); err != nil {
-			return nil, err
-		}
+		o(ctx, c.client, &info)
 	}
 -	// 填好rootfs的mount信息	
 	if info.RootFS != nil {
@@ -1339,14 +1264,9 @@ func (c *container) NewTask(ctx context.Context, ioCreate cio.Creator, opts ...N
 		id:     c.id,
 		c:      c,
 	}
-	if info.Checkpoint != nil {
-		request.Checkpoint = info.Checkpoint
-	}
+
 -	// 请求task service创建container	
 	response, err := c.client.TaskService().Create(ctx, request)
-	if err != nil {
-		return nil, errdefs.FromGRPC(err)
-	}
 	t.pid = response.Pid
 	return t, nil
 }
