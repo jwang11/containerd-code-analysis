@@ -319,8 +319,6 @@ func ApplyLayerWithOpts(ctx context.Context, layer Layer, chain []digest.Digest,
 - ***applylayers***
 ```diff
 - 在snapshotter里增加Layer分三步，prepare，apply和commit
-```
-```diff
 func applyLayers(ctx context.Context, layers []Layer, chain []digest.Digest, sn snapshots.Snapshotter, a diff.Applier, opts []snapshots.Opt, applyOpts []diff.ApplyOpt) error {
 	var (
 		parent  = identity.ChainID(chain[:len(chain)-1])
