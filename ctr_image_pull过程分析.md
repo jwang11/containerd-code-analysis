@@ -155,6 +155,12 @@ func NewImageWithPlatform(client *Client, i images.Image, platform platforms.Mat
 
 - ***image.unpack***
 ```diff
+type image struct {
+	client *Client
+	i        images.Image
+	platform platforms.MatchComparer
+}
+
 func (i *image) Unpack(ctx context.Context, snapshotterName string, opts ...UnpackOpt) error {
 	ctx, done, err := i.client.WithLease(ctx)
 	defer done(ctx)
@@ -174,12 +180,9 @@ func (i *image) Unpack(ctx context.Context, snapshotterName string, opts ...Unpa
 		chain    []digest.Digest
 		unpacked bool
 	)
--	// 如果没有指定snapshotter，使用缺省的	
+-	// 如果没有指定snapshotterName，使用缺省的	
 	snapshotterName, err = i.client.resolveSnapshotterName(ctx, snapshotterName)
 	sn, err := i.client.getSnapshotter(ctx, snapshotterName)
-	if config.CheckPlatformSupported {
-		i.checkSnapshotterSupport(ctx, snapshotterName, manifest)
-	}
 
 	for _, layer := range layers {
 		unpacked, err = rootfs.ApplyLayerWithOpts(ctx, layer, chain, sn, a, config.SnapshotOpts, config.ApplyOpts)
@@ -207,20 +210,29 @@ func (i *image) Unpack(ctx context.Context, snapshotterName string, opts ...Unpa
 		},
 	}
 
+-	// update Image information
 	_, err = cs.Update(ctx, cinfo, fmt.Sprintf("labels.containerd.io/gc.ref.snapshot.%s", snapshotterName))
 	return err
 }
 ```
->> getManifest
+> ---
 ```diff
 func (i *image) getManifest(ctx context.Context, platform platforms.MatchComparer) (ocispec.Manifest, error) {
 	cs := i.ContentStore()
+-	// 从content store里面根据image.Target拿到manifest
 	manifest, err := images.Manifest(ctx, cs, i.i.Target, platform)
 	return manifest, nil
 }
-```
->> getLayers
-```diff
+
+func (i *image) getManifest(ctx context.Context, platform platforms.MatchComparer) (ocispec.Manifest, error) {
+	cs := i.ContentStore()
+	manifest, err := images.Manifest(ctx, cs, i.i.Target, platform)
+	if err != nil {
+		return ocispec.Manifest{}, err
+	}
+	return manifest, nil
+}
+
 func (i *image) getLayers(ctx context.Context, platform platforms.MatchComparer, manifest ocispec.Manifest) ([]rootfs.Layer, error) {
 	cs := i.ContentStore()
 	diffIDs, err := i.i.RootFS(ctx, cs, platform)
@@ -234,6 +246,48 @@ func (i *image) getLayers(ctx context.Context, platform platforms.MatchComparer,
 		layers[i].Blob = manifest.Layers[i]
 	}
 	return layers, nil
+}
+
+func (i *image) RootFS(ctx context.Context) ([]digest.Digest, error) {
+	provider := i.client.ContentStore()
++	return i.i.RootFS(ctx, provider, i.platform)
+}
+
+// RootFS returns the unpacked diffids that make up and images rootfs.
+//
+// These are used to verify that a set of layers unpacked to the expected
+// values.
+func (image *Image) RootFS(ctx context.Context, provider content.Provider, platform platforms.MatchComparer) ([]digest.Digest, error) {
+	desc, err := image.Config(ctx, provider, platform)
+	return RootFS(ctx, provider, desc)
+}
+
+// RootFS returns the unpacked diffids that make up and images rootfs.
+//
+// These are used to verify that a set of layers unpacked to the expected
+// values.
+func RootFS(ctx context.Context, provider content.Provider, configDesc ocispec.Descriptor) ([]digest.Digest, error) {
+	p, err := content.ReadBlob(ctx, provider, configDesc)
+	var config ocispec.Image
+	json.Unmarshal(p, &config)
+	return config.RootFS.DiffIDs, nil
+}
+
+func (image *Image) Config(ctx context.Context, provider content.Provider, platform platforms.MatchComparer) (ocispec.Descriptor, error) {
+	return Config(ctx, provider, image.Target, platform)
+}
+
+// Config resolves the image configuration descriptor using a content provided
+// to resolve child resources on the image.
+//
+// The caller can then use the descriptor to resolve and process the
+// configuration of the image.
+func Config(ctx context.Context, provider content.Provider, image ocispec.Descriptor, platform platforms.MatchComparer) (ocispec.Descriptor, error) {
+	manifest, err := Manifest(ctx, provider, image, platform)
+	if err != nil {
+		return ocispec.Descriptor{}, err
+	}
+	return manifest.Config, err
 }
 ```
 
