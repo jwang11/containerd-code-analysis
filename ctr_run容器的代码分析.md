@@ -197,10 +197,6 @@ var Command = cli.Command{
 		ioOpts := []cio.Opt{cio.WithFIFODir(context.String("fifo-dir"))}
 -		// 创建真正container - $runc create id
 		task, err := tasks.NewTask(ctx, client, container, context.String("checkpoint"), con, context.Bool("null-io"), context.String("log-uri"), ioOpts, opts...)
-		if err != nil {
-			return err
-		}
-
 		var statusC <-chan containerd.ExitStatus
 		if !detach {
 			defer func() {
