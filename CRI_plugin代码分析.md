@@ -367,21 +367,9 @@ func (c *criService) Run() error {
 	const streamServerStopTimeout = 2 * time.Second
 	select {
 	case err := <-streamServerErrCh:
-		if err != nil {
-			streamServerErr = err
-		}
 		logrus.Info("Stream server stopped")
 	case <-time.After(streamServerStopTimeout):
 		logrus.Errorf("Stream server is not stopped in %q", streamServerStopTimeout)
-	}
-	if eventMonitorErr != nil {
-		return errors.Wrap(eventMonitorErr, "event monitor error")
-	}
-	if streamServerErr != nil {
-		return errors.Wrap(streamServerErr, "stream server error")
-	}
-	if cniNetConfMonitorErr != nil {
-		return errors.Wrap(cniNetConfMonitorErr, "cni network conf monitor error")
 	}
 	return nil
 }
@@ -411,23 +399,221 @@ type instrumentedService struct {
 ```
 
 ## CRI接口实现
-
-### CreateContainer
+- CRI Container
 ```diff
-type CreateContainerRequest struct {
-	// ID of the PodSandbox in which the container should be created.
-	PodSandboxId string `protobuf:"bytes,1,opt,name=pod_sandbox_id,json=podSandboxId,proto3" json:"pod_sandbox_id,omitempty"`
-	// Config of the container.
-	Config *ContainerConfig `protobuf:"bytes,2,opt,name=config,proto3" json:"config,omitempty"`
-	// Config of the PodSandbox. This is the same config that was passed
-	// to RunPodSandboxRequest to create the PodSandbox. It is passed again
-	// here just for easy reference. The PodSandboxConfig is immutable and
-	// remains the same throughout the lifetime of the pod.
-	SandboxConfig        *PodSandboxConfig `protobuf:"bytes,3,opt,name=sandbox_config,json=sandboxConfig,proto3" json:"sandbox_config,omitempty"`
-	XXX_NoUnkeyedLiteral struct{}          `json:"-"`
-	XXX_sizecache        int32             `json:"-"`
+// Container contains all resources associated with the container. All methods to
+// mutate the internal state are thread-safe.
+type Container struct {
+	// Metadata is the metadata of the container, it is **immutable** after created.
+	Metadata
+	// Status stores the status of the container.
+	Status StatusStorage
+	// Container is the containerd container client.
+	Container containerd.Container
+	// Container IO.
+	// IO could only be nil when the container is in unknown state.
+	IO *cio.ContainerIO
+	// StopCh is used to propagate the stop information of the container.
+	*store.StopCh
+	// IsStopSignaledWithTimeout the default is 0, and it is set to 1 after sending
+	// the signal once to avoid repeated sending of the signal.
+	IsStopSignaledWithTimeout *uint32
 }
 
+// Store stores all Containers.
+type Store struct {
+	lock       sync.RWMutex
+	containers map[string]Container
+	idIndex    *truncindex.TruncIndex
+	labels     *label.Store
+}
+
+// NewStore creates a container store.
+func NewStore(labels *label.Store) *Store {
+	return &Store{
+		containers: make(map[string]Container),
+		idIndex:    truncindex.NewTruncIndex([]string{}),
+		labels:     labels,
+	}
+}
+
+// Add a container into the store. Returns store.ErrAlreadyExist if the
+// container already exists.
+func (s *Store) Add(c Container) error {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+	s.containers[c.ID]
+	s.labels.Reserve(c.ProcessLabel)
+	s.idIndex.Add(c.ID)
+	s.containers[c.ID] = c
+	return nil
+}
+
+// Get returns the container with specified id. Returns store.ErrNotExist
+// if the container doesn't exist.
+func (s *Store) Get(id string) (Container, error) {
+	s.lock.RLock()
+	defer s.lock.RUnlock()
+	id, err := s.idIndex.Get(id)
+	if c, ok := s.containers[id]; ok {
+		return c, nil
+	}
+	return Container{}, errdefs.ErrNotFound
+}
+
+// List lists all containers.
+func (s *Store) List() []Container {
+	s.lock.RLock()
+	defer s.lock.RUnlock()
+	var containers []Container
+	for _, c := range s.containers {
+		containers = append(containers, c)
+	}
+	return containers
+}
+```
+
+- CRI Image
+```diff
+type Image struct {
+	// Id of the image. Normally the digest of image config.
+	ID string
+	// References are references to the image, e.g. RepoTag and RepoDigest.
+	References []string
+	// ChainID is the chainID of the image.
+	ChainID string
+	// Size is the compressed size of the image.
+	Size int64
+	// ImageSpec is the oci image structure which describes basic information about the image.
+	ImageSpec imagespec.Image
+}
+
+// Store stores all images.
+type Store struct {
+	lock sync.RWMutex
+	// refCache is a containerd image reference to image id cache.
+	refCache map[string]string
+	// client is the containerd client.
+	client *containerd.Client
+	// store is the internal image store indexed by image id.
+	store *store
+}
+
+type store struct {
+	lock      sync.RWMutex
+	images    map[string]Image
+	digestSet *digestset.Set
+}
+
+func (s *store) list() []Image {
+	s.lock.RLock()
+	defer s.lock.RUnlock()
+	var images []Image
+	for _, i := range s.images {
+		images = append(images, i)
+	}
+	return images
+}
+
+func (s *store) add(img Image) error {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+	if _, err := s.digestSet.Lookup(img.ID); err != nil {
+		s.digestSet.Add(imagedigest.Digest(img.ID))
+
+	i, ok := s.images[img.ID]
+	if !ok {
+		// If the image doesn't exist, add it.
+		s.images[img.ID] = img
+		return nil
+	}
+	// Or else, merge and sort the references.
+	i.References = sortReferences(util.MergeStringSlices(i.References, img.References))
+	s.images[img.ID] = i
+	return nil
+}
+
+
+// NewStore creates an image store.
+func NewStore(client *containerd.Client) *Store {
+	return &Store{
+		refCache: make(map[string]string),
+		client:   client,
+		store: &store{
+			images:    make(map[string]Image),
+			digestSet: digestset.NewSet(),
+		},
+	}
+}
+
+// Update updates cache for a reference.
+func (s *Store) Update(ctx context.Context, ref string) error {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+	i, err := s.client.GetImage(ctx, ref)
+	if err != nil && !errdefs.IsNotFound(err) {
+		return errors.Wrap(err, "get image from containerd")
+	}
+	var img *Image
+	if err == nil {
+		img, err = getImage(ctx, i)
+		if err != nil {
+			return errors.Wrap(err, "get image info from containerd")
+		}
+	}
+	return s.update(ref, img)
+}
+
+// update updates the internal cache. img == nil means that
+// the image does not exist in containerd.
+func (s *Store) update(ref string, img *Image) error {
+	oldID, oldExist := s.refCache[ref]
+	if img == nil {
+		// The image reference doesn't exist in containerd.
+		if oldExist {
+			// Remove the reference from the store.
+			s.store.delete(oldID, ref)
+			delete(s.refCache, ref)
+		}
+		return nil
+	}
+	if oldExist {
+		if oldID == img.ID {
+			return nil
+		}
+		// Updated. Remove tag from old image.
+		s.store.delete(oldID, ref)
+	}
+	// New image. Add new image.
+	s.refCache[ref] = img.ID
+	return s.store.add(*img)
+}
+
+// getImage gets image information from containerd.
+func getImage(ctx context.Context, i containerd.Image) (*Image, error) {
+	// Get image information.
+	diffIDs, err := i.RootFS(ctx)
+	chainID := imageidentity.ChainID(diffIDs)
+
+	size, err := i.Size(ctx)
+	desc, err := i.Config(ctx)
+	id := desc.Digest.String()
+
+	rb, err := content.ReadBlob(ctx, i.ContentStore(), desc)
+	var ociimage imagespec.Image
+	json.Unmarshal(rb, &ociimage)
+
+	return &Image{
+		ID:         id,
+		References: []string{i.Name()},
+		ChainID:    chainID.String(),
+		Size:       size,
+		ImageSpec:  ociimage,
+	}, nil
+}
+```
+### CreateContainer
+```diff
 func (in *instrumentedService) CreateContainer(ctx context.Context, r *runtime.CreateContainerRequest) (res *runtime.CreateContainerResponse, err error) {
 	log.G(ctx).Infof("CreateContainer within sandbox %q for container %+v",
 		r.GetPodSandboxId(), r.GetConfig().GetMetadata())
