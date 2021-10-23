@@ -922,3 +922,126 @@ func (c *criService) StartContainer(ctx context.Context, r *runtime.StartContain
 	return &runtime.StartContainerResponse{}, nil
 }
 ```
+
+### PullImage
+```diff
+func (in *instrumentedService) PullImage(ctx context.Context, r *runtime.PullImageRequest) (res *runtime.PullImageResponse, err error) {
+	log.G(ctx).Infof("PullImage %q", r.GetImage().GetImage())
+	res, err = in.c.PullImage(ctrdutil.WithNamespace(ctx), r)
+	return res, errdefs.ToGRPC(err)
+}
+
+// For image management:
+// 1) We have an in-memory metadata index to:
+//   a. Maintain ImageID -> RepoTags, ImageID -> RepoDigset relationships; ImageID
+//   is the digest of image config, which conforms to oci image spec.
+//   b. Cache constant and useful information such as image chainID, config etc.
+//   c. An image will be added into the in-memory metadata only when it's successfully
+//   pulled and unpacked.
+//
+// 2) We use containerd image metadata store and content store:
+//   a. To resolve image reference (digest/tag) locally. During pulling image, we
+//   normalize the image reference provided by user, and put it into image metadata
+//   store with resolved descriptor. For the other operations, if image id is provided,
+//   we'll access the in-memory metadata index directly; if image reference is
+//   provided, we'll normalize it, resolve it in containerd image metadata store
+//   to get the image id.
+//   b. As the backup of in-memory metadata in 1). During startup, the in-memory
+//   metadata could be re-constructed from image metadata store + content store.
+//
+// Several problems with current approach:
+// 1) An entry in containerd image metadata store doesn't mean a "READY" (successfully
+// pulled and unpacked) image. E.g. during pulling, the client gets killed. In that case,
+// if we saw an image without snapshots or with in-complete contents during startup,
+// should we re-pull the image? Or should we remove the entry?
+//
+// yanxuean: We can't delete image directly, because we don't know if the image
+// is pulled by us. There are resource leakage.
+//
+// 2) Containerd suggests user to add entry before pulling the image. However if
+// an error occurs during the pulling, should we remove the entry from metadata
+// store? Or should we leave it there until next startup (resource leakage)?
+//
+// 3) The cri plugin only exposes "READY" (successfully pulled and unpacked) images
+// to the user, which are maintained in the in-memory metadata index. However, it's
+// still possible that someone else removes the content or snapshot by-pass the cri plugin,
+// how do we detect that and update the in-memory metadata correspondingly? Always
+// check whether corresponding snapshot is ready when reporting image status?
+//
+// 4) Is the content important if we cached necessary information in-memory
+// after we pull the image? How to manage the disk usage of contents? If some
+// contents are missing but snapshots are ready, is the image still "READY"?
+
+// PullImage pulls an image with authentication config.
+func (c *criService) PullImage(ctx context.Context, r *runtime.PullImageRequest) (*runtime.PullImageResponse, error) {
+	imageRef := r.GetImage().GetImage()
+	namedRef, err := distribution.ParseDockerRef(imageRef)
+	ref := namedRef.String()
+	if ref != imageRef {
+		log.G(ctx).Debugf("PullImage using normalized image ref: %q", ref)
+	}
+	var (
+		resolver = docker.NewResolver(docker.ResolverOptions{
+			Headers: c.config.Registry.Headers,
+			Hosts:   c.registryHosts(ctx, r.GetAuth()),
+		})
+		isSchema1    bool
+		imageHandler containerdimages.HandlerFunc = func(_ context.Context,
+			desc imagespec.Descriptor) ([]imagespec.Descriptor, error) {
+			if desc.MediaType == containerdimages.MediaTypeDockerSchema1Manifest {
+				isSchema1 = true
+			}
+			return nil, nil
+		}
+	)
+
+	pullOpts := []containerd.RemoteOpt{
+		containerd.WithSchema1Conversion,
+		containerd.WithResolver(resolver),
+		containerd.WithPullSnapshotter(c.config.ContainerdConfig.Snapshotter),
+		containerd.WithPullUnpack,
+		containerd.WithPullLabel(imageLabelKey, imageLabelValue),
+		containerd.WithMaxConcurrentDownloads(c.config.MaxConcurrentDownloads),
+		containerd.WithImageHandler(imageHandler),
+	}
+
+	pullOpts = append(pullOpts, c.encryptedImagesPullOpts()...)
+	if !c.config.ContainerdConfig.DisableSnapshotAnnotations {
+		pullOpts = append(pullOpts,
+			containerd.WithImageHandlerWrapper(appendInfoHandlerWrapper(ref)))
+	}
+
+	if c.config.ContainerdConfig.DiscardUnpackedLayers {
+		// Allows GC to clean layers up from the content store after unpacking
+		pullOpts = append(pullOpts,
+			containerd.WithChildLabelMap(containerdimages.ChildGCLabelsFilterLayers))
+	}
+
+	image, err := c.client.Pull(ctx, ref, pullOpts...)
+
+	configDesc, err := image.Config(ctx)
+
+	imageID := configDesc.Digest.String()
+
+	repoDigest, repoTag := getRepoDigestAndTag(namedRef, image.Target().Digest, isSchema1)
+	for _, r := range []string{imageID, repoTag, repoDigest} {
+		if r == "" {
+			continue
+		}
+		c.createImageReference(ctx, r, image.Target())
+		// Update image store to reflect the newest state in containerd.
+		// No need to use `updateImage`, because the image reference must
+		// have been managed by the cri plugin.
+		c.imageStore.Update(ctx, r)
+	}
+
+	log.G(ctx).Debugf("Pulled image %q with image id %q, repo tag %q, repo digest %q", imageRef, imageID,
+		repoTag, repoDigest)
+	// NOTE(random-liu): the actual state in containerd is the source of truth, even we maintain
+	// in-memory image store, it's only for in-memory indexing. The image could be removed
+	// by someone else anytime, before/during/after we create the metadata. We should always
+	// check the actual state in containerd before using the image or returning status of the
+	// image.
+	return &runtime.PullImageResponse{ImageRef: imageID}, nil
+}
+```
