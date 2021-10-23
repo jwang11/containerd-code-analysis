@@ -431,11 +431,7 @@ type CreateContainerRequest struct {
 func (in *instrumentedService) CreateContainer(ctx context.Context, r *runtime.CreateContainerRequest) (res *runtime.CreateContainerResponse, err error) {
 	log.G(ctx).Infof("CreateContainer within sandbox %q for container %+v",
 		r.GetPodSandboxId(), r.GetConfig().GetMetadata())
-	defer func() {
-			log.G(ctx).Infof("CreateContainer within sandbox %q for %+v returns container id %q",
-				r.GetPodSandboxId(), r.GetConfig().GetMetadata(), res.GetContainerId())
-	}()
-	res, err = in.c.CreateContainer(ctrdutil.WithNamespace(ctx), r)
++	res, err = in.c.CreateContainer(ctrdutil.WithNamespace(ctx), r)
 	return res, errdefs.ToGRPC(err)
 }
 
@@ -579,5 +575,79 @@ func (c *criService) CreateContainer(ctx context.Context, r *runtime.CreateConta
 	c.containerStore.Add(container)
 
 	return &runtime.CreateContainerResponse{ContainerId: id}, nil
+}
+```
+### StartContainer
+
+```diff
+func (in *instrumentedService) StartContainer(ctx context.Context, r *runtime.StartContainerRequest) (_ *runtime.StartContainerResponse, err error) {
+	log.G(ctx).Infof("StartContainer for %q", r.GetContainerId())
++	res, err := in.c.StartContainer(ctrdutil.WithNamespace(ctx), r)
+	return res, errdefs.ToGRPC(err)
+}
+
+- 启动容器，真正走到runc
+// StartContainer starts the container.
+func (c *criService) StartContainer(ctx context.Context, r *runtime.StartContainerRequest) (retRes *runtime.StartContainerResponse, retErr error) {
+	cntr, err := c.containerStore.Get(r.GetContainerId())
+	id := cntr.ID
+	meta := cntr.Metadata
+	container := cntr.Container
+	config := meta.Config
+
+	// Set starting state to prevent other start/remove operations against this container
+	// while it's being started.
+	setContainerStarting(cntr)
+
+	// Get sandbox config from sandbox store.
+	sandbox, err := c.sandboxStore.Get(meta.SandboxID)
+	sandboxID := meta.SandboxID
+
+	// Recheck target container validity in Linux namespace options.
+	if linux := config.GetLinux(); linux != nil {
+		nsOpts := linux.GetSecurityContext().GetNamespaceOptions()
+		if nsOpts.GetPid() == runtime.NamespaceMode_TARGET {
+			_, err := c.validateTargetContainer(sandboxID, nsOpts.TargetId)
+		}
+	}
+
+	ioCreation := func(id string) (_ containerdio.IO, err error) {
+		stdoutWC, stderrWC, err := c.createContainerLoggers(meta.LogPath, config.GetTty())
+		cntr.IO.AddOutput("log", stdoutWC, stderrWC)
+		cntr.IO.Pipe()
+		return cntr.IO, nil
+	}
+
+	ctrInfo, err := container.Info(ctx)
+
+	taskOpts := c.taskOpts(ctrInfo.Runtime.Name)
++	task, err := container.NewTask(ctx, ioCreation, taskOpts...)
+
+	// wait is a long running background request, no timeout needed.
+	exitCh, err := task.Wait(ctrdutil.NamespacedContext())
+
+	nric, err := nri.New()
+
+	if nric != nil {
+		nriSB := &nri.Sandbox{
+			ID:     sandboxID,
+			Labels: sandbox.Config.Labels,
+		}
+		nric.InvokeWithSandbox(ctx, task, v1.Create, nriSB)
+	}
+
+	// Start containerd task.
++	task.Start(ctx)
+
+	// Update container start timestamp.
+	if err := cntr.Status.UpdateSync(func(status containerstore.Status) (containerstore.Status, error) {
+		status.Pid = task.Pid()
+		status.StartedAt = time.Now().UnixNano()
+		return status, nil
+	})
+
+	// It handles the TaskExit event and update container state after this.
+	c.eventMonitor.startContainerExitMonitor(context.Background(), id, task.Pid(), exitCh)
+	return &runtime.StartContainerResponse{}, nil
 }
 ```
