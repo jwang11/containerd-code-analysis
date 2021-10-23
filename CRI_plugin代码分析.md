@@ -399,6 +399,91 @@ type instrumentedService struct {
 ```
 
 ## CRI接口实现
+- CRI Sandbox
+```diff
+// Sandbox contains all resources associated with the sandbox. All methods to
+// mutate the internal state are thread safe.
+type Sandbox struct {
+	// Metadata is the metadata of the sandbox, it is immutable after created.
+	Metadata
+	// Status stores the status of the sandbox.
+	Status StatusStorage
+	// Container is the containerd sandbox container client.
+	Container containerd.Container
+	// CNI network namespace client.
+	// For hostnetwork pod, this is always nil;
+	// For non hostnetwork pod, this should never be nil.
+	NetNS *netns.NetNS
+	// StopCh is used to propagate the stop information of the sandbox.
+	*store.StopCh
+}
+
+// NewSandbox creates an internally used sandbox type. This functions reminds
+// the caller that a sandbox must have a status.
+func NewSandbox(metadata Metadata, status Status) Sandbox {
+	s := Sandbox{
+		Metadata: metadata,
+		Status:   StoreStatus(status),
+		StopCh:   store.NewStopCh(),
+	}
+	if status.State == StateNotReady {
+		s.Stop()
+	}
+	return s
+}
+
+// Store stores all sandboxes.
+type Store struct {
+	lock      sync.RWMutex
+	sandboxes map[string]Sandbox
+	idIndex   *truncindex.TruncIndex
+	labels    *label.Store
+}
+
+// NewStore creates a sandbox store.
+func NewStore(labels *label.Store) *Store {
+	return &Store{
+		sandboxes: make(map[string]Sandbox),
+		idIndex:   truncindex.NewTruncIndex([]string{}),
+		labels:    labels,
+	}
+}
+
+// Add a sandbox into the store.
+func (s *Store) Add(sb Sandbox) error {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+	if _, ok := s.sandboxes[sb.ID]; ok {
+		return errdefs.ErrAlreadyExists
+	}
+	s.labels.Reserve(sb.ProcessLabel)
+	s.idIndex.Add(sb.ID)
+	s.sandboxes[sb.ID] = sb
+	return nil
+}
+
+// Get returns the sandbox with specified id.
+// Returns store.ErrNotExist if the sandbox doesn't exist.
+func (s *Store) Get(id string) (Sandbox, error) {
+	s.lock.RLock()
+	defer s.lock.RUnlock()
+	id, err := s.idIndex.Get(id)
+	sb, ok := s.sandboxes[id]
+	return Sandbox{}, errdefs.ErrNotFound
+}
+
+// List lists all sandboxes.
+func (s *Store) List() []Sandbox {
+	s.lock.RLock()
+	defer s.lock.RUnlock()
+	var sandboxes []Sandbox
+	for _, sb := range s.sandboxes {
+		sandboxes = append(sandboxes, sb)
+	}
+	return sandboxes
+}
+```
+
 - CRI Container
 ```diff
 // Container contains all resources associated with the container. All methods to
