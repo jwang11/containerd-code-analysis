@@ -114,15 +114,10 @@ func initCRIService(ic *plugin.InitContext) (interface{}, error) {
 	}
 	log.G(ctx).Infof("Start cri plugin with config %+v", c)
 
-	if err := setGLogLevel(); err != nil {
-		return nil, errors.Wrap(err, "failed to set glog level")
-	}
+	setGLogLevel()
 
 -	// 因为是建立一个新的server，它map了一大批依赖服务，
 +	servicesOpts, err := getServicesOpts(ic)
-	if err != nil {
-		return nil, errors.Wrap(err, "failed to get services")
-	}
 
 	log.G(ctx).Info("Connect containerd service")
 	client, err := containerd.New(
@@ -131,19 +126,10 @@ func initCRIService(ic *plugin.InitContext) (interface{}, error) {
 		containerd.WithDefaultPlatform(platforms.Default()),
 		containerd.WithServices(servicesOpts...),
 	)
-	if err != nil {
-		return nil, errors.Wrap(err, "failed to create containerd client")
-	}
-
 +	s, err := server.NewCRIService(c, client)
-	if err != nil {
-		return nil, errors.Wrap(err, "failed to create CRI service")
-	}
 
 	go func() {
-+		if err := s.Run(); err != nil {
-			log.G(ctx).WithError(err).Fatal("Failed to run CRI service")
-		}
++		s.Run()
 		// TODO(random-liu): Whether and how we can stop containerd.
 	}()
 	return s, nil
@@ -198,16 +184,7 @@ func getServicesOpts(ic *plugin.InitContext) ([]containerd.ServicesOpt, error) {
 		},
 	} {
 		p := plugins[s]
-		if p == nil {
-			return nil, errors.Errorf("service %q not found", s)
-		}
 		i, err := p.Instance()
-		if err != nil {
-			return nil, errors.Wrapf(err, "failed to get instance of service %q", s)
-		}
-		if i == nil {
-			return nil, errors.Errorf("instance of service %q not found", s)
-		}
 -		// 得到service的instance，并生成ServiceOpt
 +		opts = append(opts, fn(i))
 	}
@@ -217,7 +194,7 @@ func getServicesOpts(ic *plugin.InitContext) ([]containerd.ServicesOpt, error) {
 
 ### NewCRIService生成criService
 ```diff
-- criService是整个CRI plugin的处理核心，它实现了一堆接口，包括RuntimeServiceServer和ImageServiceServer
+- criService是整个CRI plugin的处理核心，它实现了CRI接口，包括RuntimeServiceServer和ImageServiceServer
 // grpcServices are all the grpc services provided by cri containerd.
 type grpcServices interface {
 	runtime.RuntimeServiceServer
@@ -251,36 +228,21 @@ func NewCRIService(config criconfig.Config, client *containerd.Client) (CRIServi
 		initialized:        atomic.NewBool(false),
 	}
 
-+	if client.SnapshotService(c.config.ContainerdConfig.Snapshotter) == nil {
-		return nil, errors.Errorf("failed to find snapshotter %q", c.config.ContainerdConfig.Snapshotter)
-	}
-
++	client.SnapshotService(c.config.ContainerdConfig.Snapshotter)
 +	c.imageFSPath = imageFSPath(config.ContainerdRootDir, config.ContainerdConfig.Snapshotter)
 	logrus.Infof("Get image filesystem path %q", c.imageFSPath)
 
-+	if err := c.initPlatform(); err != nil {
-		return nil, errors.Wrap(err, "initialize platform")
-	}
++	c.initPlatform()
 
 	// prepare streaming server
 +	c.streamServer, err = newStreamServer(c, config.StreamServerAddress, config.StreamServerPort, config.StreamIdleTimeout)
-	if err != nil {
-		return nil, errors.Wrap(err, "failed to create stream server")
-	}
 
 	c.eventMonitor = newEventMonitor(c)
 
 +	c.cniNetConfMonitor, err = newCNINetConfSyncer(c.config.NetworkPluginConfDir, c.netPlugin, c.cniLoadOptions())
-	if err != nil {
-		return nil, errors.Wrap(err, "failed to create cni conf monitor")
-	}
 
 	// Preload base OCI specs
 +	c.baseOCISpecs, err = loadBaseOCISpecs(&config)
-	if err != nil {
-		return nil, err
-	}
-
 	return c, nil
 }
 ```
@@ -289,24 +251,7 @@ func NewCRIService(config criconfig.Config, client *containerd.Client) (CRIServi
 // initPlatform handles linux specific initialization for the CRI service.
 func (c *criService) initPlatform() error {
 	var err error
-
-	if userns.RunningInUserNS() {
-		if !(c.config.DisableCgroup && !c.apparmorEnabled() && c.config.RestrictOOMScoreAdj) {
-			logrus.Warn("Running containerd in a user namespace typically requires disable_cgroup, disable_apparmor, restrict_oom_score_adj set to be true")
-		}
-	}
-
-	if c.config.EnableSelinux {
-		if !selinux.GetEnabled() {
-			logrus.Warn("Selinux is not supported")
-		}
-		if r := c.config.SelinuxCategoryRange; r > 0 {
-			selinux.CategoryRange = uint32(r)
-		}
-	} else {
-		selinux.SetDisabled()
-	}
-
+	
 	// Pod needs to attach to at least loopback network and a non host network,
 	// hence networkAttachCount is 2. If there are more network configs the
 	// pod will be attached to all the networks but we will only use the ip
@@ -315,15 +260,8 @@ func (c *criService) initPlatform() error {
 		cni.WithPluginConfDir(c.config.NetworkPluginConfDir),
 		cni.WithPluginMaxConfNum(c.config.NetworkPluginMaxConfNum),
 		cni.WithPluginDir([]string{c.config.NetworkPluginBinDir}))
-	if err != nil {
-		return errors.Wrap(err, "failed to initialize cni")
-	}
-
 	if c.allCaps == nil {
 		c.allCaps, err = cap.Current()
-		if err != nil {
-			return errors.Wrap(err, "failed to get caps")
-		}
 	}
 
 	return nil
@@ -334,16 +272,9 @@ func (c *criService) initPlatform() error {
 ```diff
 func loadOCISpec(filename string) (*oci.Spec, error) {
 	file, err := os.Open(filename)
-	if err != nil {
-		return nil, errors.Wrapf(err, "failed to open base OCI spec: %s", filename)
-	}
 	defer file.Close()
-
 	spec := oci.Spec{}
-	if err := json.NewDecoder(file).Decode(&spec); err != nil {
-		return nil, errors.Wrap(err, "failed to parse base OCI spec file")
-	}
-
+	json.NewDecoder(file).Decode(&spec)
 	return &spec, nil
 }
 
@@ -360,10 +291,6 @@ func loadBaseOCISpecs(config *criconfig.Config) (map[string]*oci.Spec, error) {
 		}
 
 		spec, err := loadOCISpec(cfg.BaseRuntimeSpec)
-		if err != nil {
-			return nil, errors.Wrapf(err, "failed to load base OCI spec from file: %s", cfg.BaseRuntimeSpec)
-		}
-
 		specs[cfg.BaseRuntimeSpec] = spec
 	}
 
@@ -409,10 +336,7 @@ func (c *criService) Run() error {
 	streamServerErrCh := make(chan error)
 	go func() {
 		defer close(streamServerErrCh)
-		if err := c.streamServer.Start(true); err != nil && err != http.ErrServerClosed {
-			logrus.WithError(err).Error("Failed to start streaming server")
-			streamServerErrCh <- err
-		}
+		c.streamServer.Start(true)
 	}()
 
 	// Set the server as initialized. GRPC services could start serving traffic.
@@ -425,9 +349,7 @@ func (c *criService) Run() error {
 	case streamServerErr = <-streamServerErrCh:
 	case cniNetConfMonitorErr = <-cniNetConfMonitorErrCh:
 	}
-	if err := c.Close(); err != nil {
-		return errors.Wrap(err, "failed to stop cri service")
-	}
+	c.Close()
 	// If the error is set above, err from channel must be nil here, because
 	// the channel is supposed to be closed. Or else, we wait and set it.
 	if err := <-eventMonitorErrCh; err != nil {
@@ -462,5 +384,200 @@ func (c *criService) Run() error {
 		return errors.Wrap(cniNetConfMonitorErr, "cni network conf monitor error")
 	}
 	return nil
+}
+```
+
+- 服务注册
+```diff
+func (c *criService) register(s *grpc.Server) error {
+	instrumented := newInstrumentedService(c)
+	runtime.RegisterRuntimeServiceServer(s, instrumented)
+	runtime.RegisterImageServiceServer(s, instrumented)
+	instrumentedAlpha := newInstrumentedAlphaService(c)
+	runtime_alpha.RegisterRuntimeServiceServer(s, instrumentedAlpha)
+	runtime_alpha.RegisterImageServiceServer(s, instrumentedAlpha)
+	return nil
+}
+
+- instrumentedService实现了CRI接口的RuntimeService和ImageSerivce
+func newInstrumentedService(c *criService) grpcServices {
+	return &instrumentedService{c: c}
+}
+
+// instrumentedService wraps service with containerd namespace and logs.
+type instrumentedService struct {
+	c *criService
+}
+```
+
+## CRI接口实现
+
+### CreateContainer
+```diff
+type CreateContainerRequest struct {
+	// ID of the PodSandbox in which the container should be created.
+	PodSandboxId string `protobuf:"bytes,1,opt,name=pod_sandbox_id,json=podSandboxId,proto3" json:"pod_sandbox_id,omitempty"`
+	// Config of the container.
+	Config *ContainerConfig `protobuf:"bytes,2,opt,name=config,proto3" json:"config,omitempty"`
+	// Config of the PodSandbox. This is the same config that was passed
+	// to RunPodSandboxRequest to create the PodSandbox. It is passed again
+	// here just for easy reference. The PodSandboxConfig is immutable and
+	// remains the same throughout the lifetime of the pod.
+	SandboxConfig        *PodSandboxConfig `protobuf:"bytes,3,opt,name=sandbox_config,json=sandboxConfig,proto3" json:"sandbox_config,omitempty"`
+	XXX_NoUnkeyedLiteral struct{}          `json:"-"`
+	XXX_sizecache        int32             `json:"-"`
+}
+
+func (in *instrumentedService) CreateContainer(ctx context.Context, r *runtime.CreateContainerRequest) (res *runtime.CreateContainerResponse, err error) {
+	log.G(ctx).Infof("CreateContainer within sandbox %q for container %+v",
+		r.GetPodSandboxId(), r.GetConfig().GetMetadata())
+	defer func() {
+			log.G(ctx).Infof("CreateContainer within sandbox %q for %+v returns container id %q",
+				r.GetPodSandboxId(), r.GetConfig().GetMetadata(), res.GetContainerId())
+	}()
+	res, err = in.c.CreateContainer(ctrdutil.WithNamespace(ctx), r)
+	return res, errdefs.ToGRPC(err)
+}
+
+- 创建容器
+// CreateContainer creates a new container in the given PodSandbox.
+func (c *criService) CreateContainer(ctx context.Context, r *runtime.CreateContainerRequest) (_ *runtime.CreateContainerResponse, retErr error) {
+	config := r.GetConfig()
+	log.G(ctx).Debugf("Container config %+v", config)
+	sandboxConfig := r.GetSandboxConfig()
+	sandbox, err := c.sandboxStore.Get(r.GetPodSandboxId())
+	sandboxID := sandbox.ID
+	s, err := sandbox.Container.Task(ctx, nil)
+	sandboxPid := s.Pid()
+
+	// Generate unique id and name for the container and reserve the name.
+	// Reserve the container name to avoid concurrent `CreateContainer` request creating
+	// the same container.
+	id := util.GenerateID()
+	metadata := config.GetMetadata()
+	if metadata == nil {
+		return nil, errors.New("container config must include metadata")
+	}
+	containerName := metadata.Name
+	name := makeContainerName(metadata, sandboxConfig.GetMetadata())
+	log.G(ctx).Debugf("Generated id %q for container %q", id, name)
+	c.containerNameIndex.Reserve(name, id)
+	defer func() {
+		// Release the name if the function returns with an error.
+		if retErr != nil {
+			c.containerNameIndex.ReleaseByName(name)
+		}
+	}()
+
+	// Create initial internal container metadata.
+	meta := containerstore.Metadata{
+		ID:        id,
+		Name:      name,
+		SandboxID: sandboxID,
+		Config:    config,
+	}
+
+	// Prepare container image snapshot. For container, the image should have
+	// been pulled before creating the container, so do not ensure the image.
+	image, err := c.localResolve(config.GetImage().GetImage())
+	containerdImage, err := c.toContainerdImage(ctx, image)
+
+	// Run container using the same runtime with sandbox.
+	sandboxInfo, err := sandbox.Container.Info(ctx)
+
+	// Create container root directory.
+	containerRootDir := c.getContainerRootDir(id)
+	c.os.MkdirAll(containerRootDir, 0755)
+
+	volatileContainerRootDir := c.getVolatileContainerRootDir(id)
+	c.os.MkdirAll(volatileContainerRootDir, 0755)
+	var volumeMounts []*runtime.Mount
+	if !c.config.IgnoreImageDefinedVolumes {
+		// Create container image volumes mounts.
+		volumeMounts = c.volumeMounts(containerRootDir, config.GetMounts(), &image.ImageSpec.Config)
+	} else if len(image.ImageSpec.Config.Volumes) != 0 {
+		log.G(ctx).Debugf("Ignoring volumes defined in image %v because IgnoreImageDefinedVolumes is set", image.ID)
+	}
+
+	// Generate container mounts.
+	mounts := c.containerMounts(sandboxID, config)
+
+	ociRuntime, err := c.getSandboxRuntime(sandboxConfig, sandbox.Metadata.RuntimeHandler)
+	log.G(ctx).Debugf("Use OCI runtime %+v for sandbox %q and container %q", ociRuntime, sandboxID, id)
+
+	spec, err := c.containerSpec(id, sandboxID, sandboxPid, sandbox.NetNSPath, containerName, containerdImage.Name(), config, sandboxConfig,
+		&image.ImageSpec.Config, append(mounts, volumeMounts...), ociRuntime)
+
+	meta.ProcessLabel = spec.Process.SelinuxLabel
+
+	// handle any KVM based runtime
+	modifyProcessLabel(ociRuntime.Type, spec)
+
+	if config.GetLinux().GetSecurityContext().GetPrivileged() {
+		// If privileged don't set the SELinux label but still record it on the container so
+		// the unused MCS label can be release later
+		spec.Process.SelinuxLabel = ""
+	}
+
+	log.G(ctx).Debugf("Container %q spec: %#+v", id, spew.NewFormatter(spec))
+
+	snapshotterOpt := snapshots.WithLabels(snapshots.FilterInheritedLabels(config.Annotations))
+	// Set snapshotter before any other options.
+	opts := []containerd.NewContainerOpts{
+		containerd.WithSnapshotter(c.config.ContainerdConfig.Snapshotter),
+		// Prepare container rootfs. This is always writeable even if
+		// the container wants a readonly rootfs since we want to give
+		// the runtime (runc) a chance to modify (e.g. to create mount
+		// points corresponding to spec.Mounts) before making the
+		// rootfs readonly (requested by spec.Root.Readonly).
+		customopts.WithNewSnapshot(id, containerdImage, snapshotterOpt),
+	}
+	if len(volumeMounts) > 0 {
+		mountMap := make(map[string]string)
+		for _, v := range volumeMounts {
+			mountMap[filepath.Clean(v.HostPath)] = v.ContainerPath
+		}
+		opts = append(opts, customopts.WithVolumes(mountMap))
+	}
+	meta.ImageRef = image.ID
+	meta.StopSignal = image.ImageSpec.Config.StopSignal
+
+	// Validate log paths and compose full container log path.
+	if sandboxConfig.GetLogDirectory() != "" && config.GetLogPath() != "" {
+		meta.LogPath = filepath.Join(sandboxConfig.GetLogDirectory(), config.GetLogPath())
+		log.G(ctx).Debugf("Composed container full log path %q using sandbox log dir %q and container log path %q",
+			meta.LogPath, sandboxConfig.GetLogDirectory(), config.GetLogPath())
+	} else {
+		log.G(ctx).Infof("Logging will be disabled due to empty log paths for sandbox (%q) or container (%q)",
+			sandboxConfig.GetLogDirectory(), config.GetLogPath())
+	}
+
+	containerIO, err := cio.NewContainerIO(id,
+		cio.WithNewFIFOs(volatileContainerRootDir, config.GetTty(), config.GetStdin()))
+
+	specOpts, err := c.containerSpecOpts(config, &image.ImageSpec.Config)
+
+	containerLabels := buildLabels(config.Labels, image.ImageSpec.Config.Labels, containerKindContainer)
+
+	runtimeOptions, err := getRuntimeOptions(sandboxInfo)
+	opts = append(opts,
+		containerd.WithSpec(spec, specOpts...),
+		containerd.WithRuntime(sandboxInfo.Runtime.Name, runtimeOptions),
+		containerd.WithContainerLabels(containerLabels),
+		containerd.WithContainerExtension(containerMetadataExtension, &meta))
+	var cntr containerd.Container
+	cntr, err = c.client.NewContainer(ctx, id, opts...)
+
+	status := containerstore.Status{CreatedAt: time.Now().UnixNano()}
+	container, err := containerstore.NewContainer(meta,
+		containerstore.WithStatus(status, containerRootDir),
+		containerstore.WithContainer(cntr),
+		containerstore.WithContainerIO(containerIO),
+	)
+
+	// Add container into container store.
+	c.containerStore.Add(container)
+
+	return &runtime.CreateContainerResponse{ContainerId: id}, nil
 }
 ```
