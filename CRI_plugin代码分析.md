@@ -3,7 +3,7 @@
 > Containerd在1.1版本直接将cri-containerd内置在Containerd中，作为一个Plugin插件<br>
 > CRI插件实现了Kubelet CRI 接口中的 Image Service 和 Runtime Service，管理容器和镜像，调用CNI插件给Pod配置网络
 
-！[cri_code]containerd_run_code.png
+![cri_code](containerd_run_code.png)
 ### [外部服务](https://github.com/containerd/containerd/blob/main/pkg/cri/cri.go)
 ```diff
 // Register CRI service plugin
