@@ -426,7 +426,34 @@ func (c *Client) Fetch(ctx context.Context, ref string, opts ...RemoteOpt) (imag
 
 -	// 正式开始fetch镜像
 	img, err := c.fetch(ctx, fetchCtx, ref, 0)
+-	// 通过Image Service创建image的metadata	
 +	return c.createNewImage(ctx, img)
+}
+
+func (c *Client) createNewImage(ctx context.Context, img images.Image) (images.Image, error) {
+	is := c.ImageService()
+	for {
+		if created, err := is.Create(ctx, img); err != nil {
+			if !errdefs.IsAlreadyExists(err) {
+				return images.Image{}, err
+			}
+
+			updated, err := is.Update(ctx, img)
+			if err != nil {
+				// if image was removed, try create again
+				if errdefs.IsNotFound(err) {
+					continue
+				}
+				return images.Image{}, err
+			}
+
+			img = updated
+		} else {
+			img = created
+		}
+
+		return img, nil
+	}
 }
 ```
 
