@@ -1046,3 +1046,187 @@ func (c *criService) PullImage(ctx context.Context, r *runtime.PullImageRequest)
 	return &runtime.PullImageResponse{ImageRef: imageID}, nil
 }
 ```
+### RunPodSandbox
+```diff
+func (in *instrumentedService) RunPodSandbox(ctx context.Context, r *runtime.RunPodSandboxRequest) (res *runtime.RunPodSandboxResponse, err error) {
+	log.G(ctx).Infof("RunPodsandbox for %+v", r.GetConfig().GetMetadata())
+	defer func() {
+		if err != nil {
+			log.G(ctx).WithError(err).Errorf("RunPodSandbox for %+v failed, error", r.GetConfig().GetMetadata())
+		} else {
+			log.G(ctx).Infof("RunPodSandbox for %+v returns sandbox id %q", r.GetConfig().GetMetadata(), res.GetPodSandboxId())
+		}
+	}()
++	res, err = in.c.RunPodSandbox(ctrdutil.WithNamespace(ctx), r)
+	return res, errdefs.ToGRPC(err)
+}
+
+// RunPodSandbox creates and starts a pod-level sandbox. Runtimes should ensure
+// the sandbox is in ready state.
+func (c *criService) RunPodSandbox(ctx context.Context, r *runtime.RunPodSandboxRequest) (_ *runtime.RunPodSandboxResponse, retErr error) {
+	config := r.GetConfig()
+	log.G(ctx).Debugf("Sandbox config %+v", config)
+
+	// Generate unique id and name for the sandbox and reserve the name.
+	id := util.GenerateID()
+	metadata := config.GetMetadata()
+	name := makeSandboxName(metadata)
+	log.G(ctx).Debugf("Generated id %q for sandbox %q", id, name)
+	// Reserve the sandbox name to avoid concurrent `RunPodSandbox` request starting the
+	// same sandbox.
+	c.sandboxNameIndex.Reserve(name, id)
+
+	// Create initial internal sandbox object.
+	sandbox := sandboxstore.NewSandbox(
+		sandboxstore.Metadata{
+			ID:             id,
+			Name:           name,
+			Config:         config,
+			RuntimeHandler: r.GetRuntimeHandler(),
+		},
+		sandboxstore.Status{
+			State: sandboxstore.StateUnknown,
+		},
+	)
+
+	// Ensure sandbox container image snapshot.
+	image, err := c.ensureImageExists(ctx, c.config.SandboxImage, config)
+	containerdImage, err := c.toContainerdImage(ctx, *image)
+
+	ociRuntime, err := c.getSandboxRuntime(config, r.GetRuntimeHandler())
+
+	log.G(ctx).Debugf("Use OCI %+v for sandbox %q", ociRuntime, id)
+
+	podNetwork := true
+
+	if goruntime.GOOS != "windows" &&
+		config.GetLinux().GetSecurityContext().GetNamespaceOptions().GetNetwork() == runtime.NamespaceMode_NODE {
+		// Pod network is not needed on linux with host network.
+		podNetwork = false
+	}
+	if goruntime.GOOS == "windows" &&
+		config.GetWindows().GetSecurityContext().GetHostProcess() {
+		//Windows HostProcess pods can only run on the host network
+		podNetwork = false
+	}
+
+	if podNetwork {
+		// If it is not in host network namespace then create a namespace and set the sandbox
+		// handle. NetNSPath in sandbox metadata and NetNS is non empty only for non host network
+		// namespaces. If the pod is in host network namespace then both are empty and should not
+		// be used.
+		var netnsMountDir = "/var/run/netns"
+		if c.config.NetNSMountsUnderStateDir {
+			netnsMountDir = filepath.Join(c.config.StateDir, "netns")
+		}
+		sandbox.NetNS, err = netns.NewNetNS(netnsMountDir)
+		sandbox.NetNSPath = sandbox.NetNS.GetPath()
+
+		// Setup network for sandbox.
+		// Certain VM based solutions like clear containers (Issue containerd/cri-containerd#524)
+		// rely on the assumption that CRI shim will not be querying the network namespace to check the
+		// network states such as IP.
+		// In future runtime implementation should avoid relying on CRI shim implementation details.
+		// In this case however caching the IP will add a subtle performance enhancement by avoiding
+		// calls to network namespace of the pod to query the IP of the veth interface on every
+		// SandboxStatus request.
+		if err := c.setupPodNetwork(ctx, &sandbox); err != nil {
+			return nil, errors.Wrapf(err, "failed to setup network for sandbox %q", id)
+		}
+	}
+
+	// Create sandbox container.
+	// NOTE: sandboxContainerSpec SHOULD NOT have side
+	// effect, e.g. accessing/creating files, so that we can test
+	// it safely.
+	spec, err := c.sandboxContainerSpec(id, config, &image.ImageSpec.Config, sandbox.NetNSPath, ociRuntime.PodAnnotations)
+
+	log.G(ctx).Debugf("Sandbox container %q spec: %#+v", id, spew.NewFormatter(spec))
+	sandbox.ProcessLabel = spec.Process.SelinuxLabel
+
+	// handle any KVM based runtime
+	modifyProcessLabel(ociRuntime.Type, spec)
+
+	if config.GetLinux().GetSecurityContext().GetPrivileged() {
+		// If privileged don't set selinux label, but we still record the MCS label so that
+		// the unused label can be freed later.
+		spec.Process.SelinuxLabel = ""
+	}
+
+	// Generate spec options that will be applied to the spec later.
+	specOpts, err := c.sandboxContainerSpecOpts(config, &image.ImageSpec.Config)
+
+	sandboxLabels := buildLabels(config.Labels, image.ImageSpec.Config.Labels, containerKindSandbox)
+
+	runtimeOpts, err := generateRuntimeOptions(ociRuntime, c.config)
+
+	snapshotterOpt := snapshots.WithLabels(snapshots.FilterInheritedLabels(config.Annotations))
+	opts := []containerd.NewContainerOpts{
+		containerd.WithSnapshotter(c.config.ContainerdConfig.Snapshotter),
+		customopts.WithNewSnapshot(id, containerdImage, snapshotterOpt),
+		containerd.WithSpec(spec, specOpts...),
+		containerd.WithContainerLabels(sandboxLabels),
+		containerd.WithContainerExtension(sandboxMetadataExtension, &sandbox.Metadata),
+		containerd.WithRuntime(ociRuntime.Type, runtimeOpts)}
+
+	container, err := c.client.NewContainer(ctx, id, opts...)
+
+	// Create sandbox container root directories.
+	sandboxRootDir := c.getSandboxRootDir(id)
+	c.os.MkdirAll(sandboxRootDir, 0755)
+	
+	volatileSandboxRootDir := c.getVolatileSandboxRootDir(id)
+	c.os.MkdirAll(volatileSandboxRootDir, 0755)
+
+	// Setup files required for the sandbox.
+	c.setupSandboxFiles(id, config)
+
+	// Update sandbox created timestamp.
+	info, err := container.Info(ctx)
+
+	// Create sandbox task in containerd.
+	log.G(ctx).Tracef("Create sandbox container (id=%q, name=%q).",
+		id, name)
+
+	taskOpts := c.taskOpts(ociRuntime.Type)
+	// We don't need stdio for sandbox container.
+	task, err := container.NewTask(ctx, containerdio.NullIO, taskOpts...)
+
+	// wait is a long running background request, no timeout needed.
+	exitCh, err := task.Wait(ctrdutil.NamespacedContext())
+
+	nric, err := nri.New()
+
+	if nric != nil {
+		nriSB := &nri.Sandbox{
+			ID:     id,
+			Labels: config.Labels,
+		}
+		nric.InvokeWithSandbox(ctx, task, v1.Create, nriSB)
+	}
+
+	task.Start(ctx)
+
+	sandbox.Status.Update(func(status sandboxstore.Status) (sandboxstore.Status, error) {
+		// Set the pod sandbox as ready after successfully start sandbox container.
+		status.Pid = task.Pid()
+		status.State = sandboxstore.StateReady
+		status.CreatedAt = info.CreatedAt
+		return status, nil
+	})
+
+	// Add sandbox into sandbox store in INIT state.
+	sandbox.Container = container
+
+	c.sandboxStore.Add(sandbox)
+
+	// start the monitor after adding sandbox into the store, this ensures
+	// that sandbox is in the store, when event monitor receives the TaskExit event.
+	//
+	// TaskOOM from containerd may come before sandbox is added to store,
+	// but we don't care about sandbox TaskOOM right now, so it is fine.
+	c.eventMonitor.startSandboxExitMonitor(context.Background(), id, task.Pid(), exitCh)
+
+	return &runtime.RunPodSandboxResponse{PodSandboxId: id}, nil
+}
+```
