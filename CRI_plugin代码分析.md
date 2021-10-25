@@ -4,7 +4,7 @@
 > CRI插件实现了Kubelet CRI 接口中的 Image Service 和 Runtime Service，管理容器和镜像，调用CNI插件给Pod配置网络
 
 ![cri_code](containerd_run_code.png)
-### [外部服务](https://github.com/containerd/containerd/blob/main/pkg/cri/cri.go)
+## [外部服务](https://github.com/containerd/containerd/blob/main/pkg/cri/cri.go)
 ```diff
 // Register CRI service plugin
 func init() {
@@ -95,7 +95,7 @@ func DefaultConfig() PluginConfig {
 	}
 }
 ```
-### ***initCRIService***
+> initCRIService
 ```diff
 func initCRIService(ic *plugin.InitContext) (interface{}, error) {
 	ic.Meta.Platforms = []imagespec.Platform{platforms.DefaultSpec()}
@@ -135,10 +135,7 @@ func initCRIService(ic *plugin.InitContext) (interface{}, error) {
 	}()
 	return s, nil
 }
-```
 
-> ***getServicesOpts***
-```diff
 // getServicesOpts get service options from plugin context.
 func getServicesOpts(ic *plugin.InitContext) ([]containerd.ServicesOpt, error) {
 	plugins, err := ic.GetByType(plugin.ServicePlugin)
@@ -193,9 +190,9 @@ func getServicesOpts(ic *plugin.InitContext) ([]containerd.ServicesOpt, error) {
 }
 ```
 
-### NewCRIService生成criService
-```diff
+### criService
 - criService是整个CRI plugin的处理核心，它实现了CRI接口，包括RuntimeServiceServer和ImageServiceServer
+```diff
 // grpcServices are all the grpc services provided by cri containerd.
 type grpcServices interface {
 	runtime.RuntimeServiceServer
