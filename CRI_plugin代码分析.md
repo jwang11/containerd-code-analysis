@@ -1077,7 +1077,7 @@ func (c *criService) RunPodSandbox(ctx context.Context, r *runtime.RunPodSandbox
 	c.sandboxNameIndex.Reserve(name, id)
 
 	// Create initial internal sandbox object.
-	sandbox := sandboxstore.NewSandbox(
++	sandbox := sandboxstore.NewSandbox(
 		sandboxstore.Metadata{
 			ID:             id,
 			Name:           name,
@@ -1090,10 +1090,10 @@ func (c *criService) RunPodSandbox(ctx context.Context, r *runtime.RunPodSandbox
 	)
 
 	// Ensure sandbox container image snapshot.
-	image, err := c.ensureImageExists(ctx, c.config.SandboxImage, config)
-	containerdImage, err := c.toContainerdImage(ctx, *image)
++	image, err := c.ensureImageExists(ctx, c.config.SandboxImage, config)
++	containerdImage, err := c.toContainerdImage(ctx, *image)
 
-	ociRuntime, err := c.getSandboxRuntime(config, r.GetRuntimeHandler())
++	ociRuntime, err := c.getSandboxRuntime(config, r.GetRuntimeHandler())
 
 	log.G(ctx).Debugf("Use OCI %+v for sandbox %q", ociRuntime, id)
 
@@ -1119,7 +1119,7 @@ func (c *criService) RunPodSandbox(ctx context.Context, r *runtime.RunPodSandbox
 		if c.config.NetNSMountsUnderStateDir {
 			netnsMountDir = filepath.Join(c.config.StateDir, "netns")
 		}
-		sandbox.NetNS, err = netns.NewNetNS(netnsMountDir)
++		sandbox.NetNS, err = netns.NewNetNS(netnsMountDir)
 		sandbox.NetNSPath = sandbox.NetNS.GetPath()
 
 		// Setup network for sandbox.
@@ -1169,7 +1169,7 @@ func (c *criService) RunPodSandbox(ctx context.Context, r *runtime.RunPodSandbox
 		containerd.WithContainerExtension(sandboxMetadataExtension, &sandbox.Metadata),
 		containerd.WithRuntime(ociRuntime.Type, runtimeOpts)}
 
-	container, err := c.client.NewContainer(ctx, id, opts...)
++	container, err := c.client.NewContainer(ctx, id, opts...)
 
 	// Create sandbox container root directories.
 	sandboxRootDir := c.getSandboxRootDir(id)
@@ -1228,5 +1228,216 @@ func (c *criService) RunPodSandbox(ctx context.Context, r *runtime.RunPodSandbox
 	c.eventMonitor.startSandboxExitMonitor(context.Background(), id, task.Pid(), exitCh)
 
 	return &runtime.RunPodSandboxResponse{PodSandboxId: id}, nil
+}
+
+// NewSandbox creates an internally used sandbox type. This functions reminds
+// the caller that a sandbox must have a status.
+func NewSandbox(metadata Metadata, status Status) Sandbox {
+	s := Sandbox{
+		Metadata: metadata,
+		Status:   StoreStatus(status),
+		StopCh:   store.NewStopCh(),
+	}
+	if status.State == StateNotReady {
+		s.Stop()
+	}
+	return s
+}
+
+// getSandboxRuntime returns the runtime configuration for sandbox.
+// If the sandbox contains untrusted workload, runtime for untrusted workload will be returned,
+// or else default runtime will be returned.
+func (c *criService) getSandboxRuntime(config *runtime.PodSandboxConfig, runtimeHandler string) (criconfig.Runtime, error) {
+	if runtimeHandler == "" {
+		runtimeHandler = c.config.ContainerdConfig.DefaultRuntimeName
+	}
+
+	handler, ok := c.config.ContainerdConfig.Runtimes[runtimeHandler]
+	return handler, nil
+}
+```
+
+- NetNS
+```diff
+// NetNS holds network namespace.
+type NetNS struct {
+	path string
+}
+
+// NewNetNS creates a network namespace.
+func NewNetNS(baseDir string) (*NetNS, error) {
+	path, err := newNS(baseDir)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to setup netns")
+	}
+	return &NetNS{path: path}, nil
+}
+
+// Some of the following functions are migrated from
+// https://github.com/containernetworking/plugins/blob/master/pkg/testutils/netns_linux.go
+
+// newNS creates a new persistent (bind-mounted) network namespace and returns the
+// path to the network namespace.
+func newNS(baseDir string) (nsPath string, err error) {
+	b := make([]byte, 16)
+	rand.Reader.Read(b)
+
+	// Create the directory for mounting network namespaces
+	// This needs to be a shared mountpoint in case it is mounted in to
+	// other namespaces (containers)
+	os.MkdirAll(baseDir, 0755)
+
+	// create an empty file at the mount point
+	nsName := fmt.Sprintf("cni-%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
+	nsPath = path.Join(baseDir, nsName)
+	mountPointFd, err := os.Create(nsPath)
+	mountPointFd.Close()
+	var wg sync.WaitGroup
+	wg.Add(1)
+
+	// do namespace work in a dedicated goroutine, so that we can safely
+	// Lock/Unlock OSThread without upsetting the lock/unlock state of
+	// the caller of this function
+	go (func() {
+		defer wg.Done()
+		runtime.LockOSThread()
+		// Don't unlock. By not unlocking, golang will kill the OS thread when the
+		// goroutine is done (for go1.10+)
+
+		var origNS cnins.NetNS
+		origNS, err = cnins.GetNS(getCurrentThreadNetNSPath())
+
+		defer origNS.Close()
+
+		// create a new netns on the current thread
+		err = unix.Unshare(unix.CLONE_NEWNET)
+
+		// Put this thread back to the orig ns, since it might get reused (pre go1.10)
+		defer origNS.Set() // nolint: errcheck
+
+		// bind mount the netns from the current thread (from /proc) onto the
+		// mount point. This causes the namespace to persist, even when there
+		// are no threads in the ns.
+		err = unix.Mount(getCurrentThreadNetNSPath(), nsPath, "none", unix.MS_BIND, "")
+	})()
+	wg.Wait()
+	return nsPath, nil
+}
+
+// setupPodNetwork setups up the network for a pod
+func (c *criService) setupPodNetwork(ctx context.Context, sandbox *sandboxstore.Sandbox) error {
+	var (
+		id        = sandbox.ID
+		config    = sandbox.Config
+		path      = sandbox.NetNSPath
++		netPlugin = c.getNetworkPlugin(sandbox.RuntimeHandler)
+	)
+	opts, err := cniNamespaceOpts(id, config)
++	result, err := netPlugin.Setup(ctx, id, path, opts...)
+	logDebugCNIResult(ctx, id, result)
+	// Check if the default interface has IP config
+	if configs, ok := result.Interfaces[defaultIfName]; ok && len(configs.IPConfigs) > 0 {
+		sandbox.IP, sandbox.AdditionalIPs = selectPodIPs(ctx, configs.IPConfigs, c.config.IPPreference)
+		sandbox.CNIResult = result
+		return nil
+	}
+	return errors.Errorf("failed to find network info for sandbox %q", id)
+}
+
+// getNetworkPlugin returns the network plugin to be used by the runtime class
+// defaults to the global CNI options in the CRI config
+func (c *criService) getNetworkPlugin(runtimeClass string) cni.CNI {
+	if c.netPlugin == nil {
+		return nil
+	}
+	i, ok := c.netPlugin[runtimeClass]
+	if !ok {
+		if i, ok = c.netPlugin[defaultNetworkPlugin]; !ok {
+			return nil
+		}
+	}
+	return i
+}
+
+// Setup setups the network in the namespace and returns a Result
+func (c *libcni) Setup(ctx context.Context, id string, path string, opts ...NamespaceOpts) (*Result, error) {
+	if err := c.Status(); err != nil {
+		return nil, err
+	}
+	ns, err := newNamespace(id, path, opts...)
+	result, err := c.attachNetworks(ctx, ns)
+	return c.createResult(result)
+}
+```
+
+- ensureImageExists
+```diff
+// ensureImageExists returns corresponding metadata of the image reference, if image is not
+// pulled yet, the function will pull the image.
+func (c *criService) ensureImageExists(ctx context.Context, ref string, config *runtime.PodSandboxConfig) (*imagestore.Image, error) {
++	image, err := c.localResolve(ref)
+	if err == nil {
+		return &image, nil
+	}
+	// Pull image to ensure the image exists
++	resp, err := c.PullImage(ctx, &runtime.PullImageRequest{Image: &runtime.ImageSpec{Image: ref}, SandboxConfig: config})
+	imageID := resp.GetImageRef()
+	newImage, err := c.imageStore.Get(imageID)
+	return &newImage, nil
+}
+
+// localResolve resolves image reference locally and returns corresponding image metadata. It
+// returns store.ErrNotExist if the reference doesn't exist.
+func (c *criService) localResolve(refOrID string) (imagestore.Image, error) {
+	getImageID := func(refOrId string) string {
+		if _, err := imagedigest.Parse(refOrID); err == nil {
+			return refOrID
+		}
+		return func(ref string) string {
+			// ref is not image id, try to resolve it locally.
+			// TODO(random-liu): Handle this error better for debugging.
+			normalized, err := docker.ParseDockerRef(ref)
+			id, err := c.imageStore.Resolve(normalized.String())
+			return id
+		}(refOrID)
+	}
+
+	imageID := getImageID(refOrID)
+	if imageID == "" {
+		// Try to treat ref as imageID
+		imageID = refOrID
+	}
+	return c.imageStore.Get(imageID)
+}
+
+// toContainerdImage converts an image object in image store to containerd image handler.
+func (c *criService) toContainerdImage(ctx context.Context, image imagestore.Image) (containerd.Image, error) {
+	// image should always have at least one reference.
+	if len(image.References) == 0 {
+		return nil, errors.Errorf("invalid image with no reference %q", image.ID)
+	}
+	return c.client.GetImage(ctx, image.References[0])
+}
+```
+
+- NewContainer
+```diff
+// NewContainer will create a new container with the provided id.
+// The id must be unique within the namespace.
+func (c *Client) NewContainer(ctx context.Context, id string, opts ...NewContainerOpts) (Container, error) {
+	ctx, done, err := c.WithLease(ctx)
+	defer done(ctx)
+
+	container := containers.Container{
+		ID: id,
+		Runtime: containers.RuntimeInfo{
+			Name: c.runtime,
+		},
+	}
+	for _, o := range opts {
+		o(ctx, c, &container)
+	}
+	r, err := c.ContainerService().Create(ctx, container)
+	return containerFromRecord(c, r), nil
 }
 ```
