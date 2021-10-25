@@ -22,7 +22,7 @@ func init() {
 }
 ```
 > DefaultConfig
-```
+```diff
 // DefaultConfig returns default configurations of cri plugin.
 func DefaultConfig() PluginConfig {
 	defaultRuncV2Opts := `
@@ -80,7 +80,7 @@ func DefaultConfig() PluginConfig {
 			TLSKeyFile:  "",
 			TLSCertFile: "",
 		},
-		SandboxImage:                     "k8s.gcr.io/pause:3.6",
++		SandboxImage:                     "k8s.gcr.io/pause:3.6",
 		StatsCollectPeriod:               10,
 		SystemdCgroup:                    false,
 		MaxContainerLogLineSize:          16 * 1024,
