@@ -22,6 +22,7 @@ func init() {
 }
 ```
 > DefaultConfig
+关于CRI Runtime缺省配置的定义，参考[这个](https://github.com/containerd/containerd/blob/main/docs/cri/config.md)
 ```diff
 // DefaultConfig returns default configurations of cri plugin.
 func DefaultConfig() PluginConfig {
@@ -58,8 +59,8 @@ func DefaultConfig() PluginConfig {
 			NetworkPluginConfTemplate: "",
 		},
 		ContainerdConfig: ContainerdConfig{
-			Snapshotter:        containerd.DefaultSnapshotter,
-			DefaultRuntimeName: "runc",
++			Snapshotter:        containerd.DefaultSnapshotter,
++			DefaultRuntimeName: "runc",
 			NoPivot:            false,
 			Runtimes: map[string]Runtime{
 				"runc": {
@@ -102,9 +103,6 @@ func initCRIService(ic *plugin.InitContext) (interface{}, error) {
 	ic.Meta.Exports = map[string]string{"CRIVersion": constants.CRIVersion, "CRIVersionAlpha": constants.CRIVersionAlpha}
 	ctx := ic.Context
 	pluginConfig := ic.Config.(*criconfig.PluginConfig)
-	if err := criconfig.ValidatePluginConfig(ctx, pluginConfig); err != nil {
-		return nil, errors.Wrap(err, "invalid plugin config")
-	}
 
 	c := criconfig.Config{
 		PluginConfig:       *pluginConfig,
@@ -151,7 +149,7 @@ func getServicesOpts(ic *plugin.InitContext) ([]containerd.ServicesOpt, error) {
 	opts := []containerd.ServicesOpt{
 		containerd.WithEventService(ep.(containerd.EventService)),
 	}
--	// 生成修改Service的闭包Map	
+-	// 生成配置Service的闭包Map
 +	for s, fn := range map[string]func(interface{}) containerd.ServicesOpt{
 		services.ContentService: func(s interface{}) containerd.ServicesOpt {
 			return containerd.WithContentStore(s.(content.Store))
@@ -183,7 +181,7 @@ func getServicesOpts(ic *plugin.InitContext) ([]containerd.ServicesOpt, error) {
 	} {
 		p := plugins[s]
 		i, err := p.Instance()
--		// 得到service的instance，并生成ServiceOpt
+-		// 根据得到service的instance，生成ServiceOpt
 +		opts = append(opts, fn(i))
 	}
 	return opts, nil
