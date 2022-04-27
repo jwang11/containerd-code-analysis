@@ -116,7 +116,7 @@ func initCRIService(ic *plugin.InitContext) (interface{}, error) {
 	setGLogLevel()
 
 -	// 因为是建立一个新的server，它map了一大批依赖服务，
-+	servicesOpts, err := getServicesOpts(ic)
+	servicesOpts, err := getServicesOpts(ic)
 
 	log.G(ctx).Info("Connect containerd service")
 	client, err := containerd.New(
@@ -150,7 +150,7 @@ func getServicesOpts(ic *plugin.InitContext) ([]containerd.ServicesOpt, error) {
 		containerd.WithEventService(ep.(containerd.EventService)),
 	}
 -	// 生成配置Service的闭包Map
-+	for s, fn := range map[string]func(interface{}) containerd.ServicesOpt{
+	for s, fn := range map[string]func(interface{}) containerd.ServicesOpt{
 		services.ContentService: func(s interface{}) containerd.ServicesOpt {
 			return containerd.WithContentStore(s.(content.Store))
 		},
@@ -182,7 +182,7 @@ func getServicesOpts(ic *plugin.InitContext) ([]containerd.ServicesOpt, error) {
 		p := plugins[s]
 		i, err := p.Instance()
 -		// 根据得到service的instance，生成ServiceOpt
-+		opts = append(opts, fn(i))
+		opts = append(opts, fn(i))
 	}
 	return opts, nil
 }
