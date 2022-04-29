@@ -5,6 +5,8 @@
 
 ![cri_code](containerd_run_code.png)
 ## [外部服务](https://github.com/containerd/containerd/blob/main/pkg/cri/cri.go)
+https://github.com/containerd/containerd/blob/main/pkg/cri/cri.go
+
 ```diff
 // Register CRI service plugin
 func init() {
